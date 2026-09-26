@@ -582,7 +582,7 @@
 
   function pickVoice(){
     const voices = synth.getVoices();
-    frenchVoice = voices.find(v => v.lang === 'fr-FR' || v.lang === 'fr_FR') || voices.find(v => v.lang && v.lang.startsWith('fr')) || voices[0] || null;
+    frenchVoice = voices.find(v=>v.lang && v.lang.startsWith('fr')) || voices[0] || null;
   }
   if(synth){ synth.onvoiceschanged = pickVoice; pickVoice(); }
 
