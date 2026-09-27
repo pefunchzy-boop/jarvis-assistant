@@ -295,6 +295,61 @@
   .key-status{display:flex;align-items:center;gap:7px;font-size:12.5px;color:var(--dim);margin:-6px 0 16px;}
   .key-status .dot{width:7px;height:7px;}
 
+  /* ---------- history panel ---------- */
+  .files-panel{
+    background:var(--bg);
+    width:100%;
+    height:100%;
+    display:flex;
+    flex-direction:column;
+  }
+  .files-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    padding:calc(16px + env(safe-area-inset-top,0px)) 18px 14px;
+    border-bottom:1px solid var(--line);
+  }
+  .files-header h2{font-size:17px;margin:0;}
+  .files-list{
+    flex:1;
+    overflow-y:auto;
+    padding:10px 14px calc(20px + env(safe-area-inset-bottom,0px));
+  }
+  .file-row{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    padding:13px 12px;
+    border-radius:12px;
+    margin-bottom:6px;
+    background:var(--bg2);
+    border:1px solid var(--line);
+    cursor:pointer;
+  }
+  .file-row:active{opacity:0.75;}
+  .file-icon{font-size:18px;flex-shrink:0;}
+  .file-info{flex:1;min-width:0;}
+  .file-name{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .file-preview{font-size:12px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px;}
+  .file-date{font-size:11px;color:var(--dim);flex-shrink:0;}
+  .file-delete{
+    width:26px;height:26px;border-radius:8px;border:none;background:transparent;
+    color:var(--dim);display:flex;align-items:center;justify-content:center;cursor:pointer;flex-shrink:0;
+  }
+  .file-delete svg{width:14px;height:14px;stroke:var(--danger);fill:none;stroke-width:1.8;}
+  .files-empty{
+    display:none;
+    text-align:center;
+    color:var(--dim);
+    font-size:13.5px;
+    line-height:1.6;
+    padding:40px 30px;
+    max-width:320px;
+    margin:auto;
+  }
+  .files-empty.show{display:block;}
+
   @media (prefers-color-scheme: light){
     :root:not([data-theme="dark"]){
       --bg:#f7f9f8;--bg2:#ffffff;--bg3:#ffffff;--line:#e2e8e5;--text:#0e1512;--dim:#7a8a84;--accent-dim:#dcf6ea;
@@ -315,6 +370,9 @@
     </div>
     <button class="icon-btn" id="goFilesBtn" title="Mes fichiers">
       <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+    </button>
+    <button class="icon-btn" id="historyBtn" title="Discussions">
+      <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
     </button>
     <button class="icon-btn" id="resetBtn" title="Nouvelle conversation">
       <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
@@ -361,6 +419,17 @@
   </button>
 </footer>
 
+<div class="modal-backdrop" id="historyBackdrop" style="align-items:stretch;">
+  <div class="files-panel">
+    <div class="files-header">
+      <h2>Discussions</h2>
+      <button class="icon-btn" id="closeHistory"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="files-list" id="historyList"></div>
+    <div class="files-empty" id="historyEmpty">Aucune discussion enregistrée pour l'instant. Elles se sauvegardent automatiquement dès que tu commences à parler à l'assistant.</div>
+  </div>
+</div>
+
 <div class="modal-backdrop" id="settingsBackdrop">
   <div class="modal">
     <h2>Adresse du serveur</h2>
@@ -400,6 +469,7 @@
   let recognitionActive = false;
   let synth = window.speechSynthesis;
   let history = [];
+  let currentConvId = null;
   let isThinking = false;
   let isSpeaking = false;
   let frenchVoice = null;
@@ -423,6 +493,11 @@
   const clearCardsBtn = document.getElementById('clearCardsBtn');
   const resetBtn = document.getElementById('resetBtn');
   const goFilesBtn = document.getElementById('goFilesBtn');
+  const historyBtn = document.getElementById('historyBtn');
+  const historyBackdrop = document.getElementById('historyBackdrop');
+  const closeHistory = document.getElementById('closeHistory');
+  const historyList = document.getElementById('historyList');
+  const historyEmpty = document.getElementById('historyEmpty');
   const toneSelect = document.getElementById('toneSelect');
   const notifToggle = document.getElementById('notifToggle');
   const settingsBtn = document.getElementById('settingsBtn');
@@ -582,7 +657,11 @@
 
   function pickVoice(){
     const voices = synth.getVoices();
-    frenchVoice = voices.find(v=>v.lang && v.lang.startsWith('fr')) || voices[0] || null;
+    // priorité : français de France, sinon n'importe quel français (hors Canada si possible), sinon la 1ère dispo
+    frenchVoice = voices.find(v=>v.lang && (v.lang.toLowerCase()==='fr-fr' || v.lang.toLowerCase()==='fr_fr'))
+      || voices.find(v=>v.lang && v.lang.startsWith('fr') && v.lang.toLowerCase() !== 'fr-ca' && v.lang.toLowerCase() !== 'fr_ca')
+      || voices.find(v=>v.lang && v.lang.startsWith('fr'))
+      || voices[0] || null;
   }
   if(synth){ synth.onvoiceschanged = pickVoice; pickVoice(); }
 
@@ -609,13 +688,27 @@
     humour: "Ton ton est plein d'humour et de légèreté, tu places volontiers une pointe d'esprit quand c'est approprié."
   };
 
-  function buildSystemPrompt(){
+  function buildSystemPrompt(hasSearchResults){
     const toneLine = TONE_TEXT[tone] || TONE_TEXT.amical;
-    return "Tu es un assistant vocal, façon Jarvis, concis. " + toneLine + " Tu réponds en français, à l'oral donc des phrases courtes et naturelles, jamais de listes à puces ni de formatage markdown (pas d'astérisques, pas de titres).\n\nTu peux, en plus de parler, faire apparaître des cartes flottantes à l'écran de l'utilisateur (qu'il peut ensuite déplacer du doigt). Tu peux déclencher PLUSIEURS cartes en une seule réponse si la demande le justifie.\n\nRéponds TOUJOURS avec un objet JSON strictement valide, rien d'autre autour (pas de balises code), sous cette forme :\n{\"spoken\":\"ta réponse orale, courte et naturelle\",\"cards\":[ ... liste de 0 à 4 cartes ... ]}\n\nChaque carte est un objet avec un champ \"type\" parmi :\n- \"note\" : {\"type\":\"note\",\"title\":\"titre court\",\"text\":\"le contenu texte à afficher\"}\n- \"image\" : {\"type\":\"image\",\"title\":\"titre court\",\"image_prompt\":\"description en anglais précise et visuelle\"}\n- \"linkedin_post\" : {\"type\":\"linkedin_post\",\"title\":\"Post LinkedIn\",\"post_text\":\"texte complet du post, ton professionnel, 2-3 hashtags max\",\"image_prompt\":\"description en anglais pour une image d'illustration\"}\n- \"weather\" : {\"type\":\"weather\",\"title\":\"nom de la ville\",\"city\":\"nom de la ville tel que demandé\"}\n- \"timer\" : {\"type\":\"timer\",\"title\":\"titre court\",\"seconds\":durée en secondes (nombre entier)}\n- \"calc\" : {\"type\":\"calc\",\"title\":\"titre court\",\"expression\":\"expression mathématique en JavaScript valide\",\"label\":\"description courte du résultat\"}\n- \"checklist\" : {\"type\":\"checklist\",\"title\":\"titre court\",\"items\":[\"tâche 1\",\"tâche 2\"]}\n- \"file\" : {\"type\":\"file\",\"filename\":\"nom-du-fichier.txt\",\"content\":\"le contenu complet du fichier à enregistrer\"}\n\nSi l'utilisateur demande de créer, écrire, sauvegarder un fichier ou une note longue à garder, utilise le type \"file\" (pas \"note\", qui est pour un affichage rapide temporaire).\nSi l'utilisateur ne demande rien qui justifie une carte, renvoie \"cards\":[].\nN'ajoute jamais de champ en dehors de ce schéma. Le JSON doit être directement parsable.";
+    let searchLine;
+    if(hasSearchResults){
+      searchLine = "Des résultats de recherche web viennent d'être fournis dans la conversation (message précédent commençant par RESULTATS_RECHERCHE). Utilise-les pour répondre factuellement, cite les infos pertinentes sans citer les URLs à l'oral. Ne redemande pas de recherche sur le même sujet.";
+    } else {
+      searchLine = "Si la question porte sur une info récente, actuelle, ou que tu ne peux pas connaître avec certitude (actualité, météo précise, prix, score, date d'un événement récent, fait vérifiable en ligne), NE REPONDS PAS de mémoire : utilise plutôt l'action \"search_web\" au lieu de \"spoken\"+\"cards\".";
+    }
+    return "Tu es un assistant vocal, façon Jarvis, concis. " + toneLine + " Tu réponds en français, à l'oral donc des phrases courtes et naturelles, jamais de listes à puces ni de formatage markdown (pas d'astérisques, pas de titres).\n\n" + searchLine + "\n\nTu peux, en plus de parler, faire apparaître des cartes flottantes à l'écran de l'utilisateur (qu'il peut ensuite déplacer du doigt). Tu peux déclencher PLUSIEURS cartes en une seule réponse si la demande le justifie.\n\nRéponds TOUJOURS avec UN SEUL objet JSON strictement valide, rien d'autre autour (pas de balises code). Deux formats possibles :\n\n1) Réponse normale :\n{\"spoken\":\"ta réponse orale, courte et naturelle\",\"cards\":[ ... liste de 0 à 4 cartes ... ]}\n\n2) Pour déclencher une recherche web (uniquement si nécessaire, voir consigne ci-dessus) :\n{\"action\":\"search_web\",\"query\":\"la requête de recherche la plus efficace possible, en quelques mots\"}\n\nChaque carte est un objet avec un champ \"type\" parmi :\n- \"note\" : {\"type\":\"note\",\"title\":\"titre court\",\"text\":\"le contenu texte à afficher\"}\n- \"image\" : {\"type\":\"image\",\"title\":\"titre court\",\"image_prompt\":\"description en anglais précise et visuelle\"}\n- \"linkedin_post\" : {\"type\":\"linkedin_post\",\"title\":\"Post LinkedIn\",\"post_text\":\"texte complet du post, ton professionnel, 2-3 hashtags max\",\"image_prompt\":\"description en anglais pour une image d'illustration\"}\n- \"weather\" : {\"type\":\"weather\",\"title\":\"nom de la ville\",\"city\":\"nom de la ville tel que demandé\"}\n- \"timer\" : {\"type\":\"timer\",\"title\":\"titre court\",\"seconds\":durée en secondes (nombre entier)}\n- \"calc\" : {\"type\":\"calc\",\"title\":\"titre court\",\"expression\":\"expression mathématique en JavaScript valide\",\"label\":\"description courte du résultat\"}\n- \"checklist\" : {\"type\":\"checklist\",\"title\":\"titre court\",\"items\":[\"tâche 1\",\"tâche 2\"]}\n- \"file\" : {\"type\":\"file\",\"filename\":\"nom-du-fichier.txt\",\"content\":\"le contenu complet du fichier à enregistrer\"}\n- \"sources\" : {\"type\":\"sources\",\"title\":\"Sources\",\"links\":[{\"title\":\"titre du site\",\"url\":\"url complète\"}]}\n\nSi l'utilisateur demande de créer, écrire, sauvegarder un fichier ou une note longue à garder, utilise le type \"file\" (pas \"note\", qui est pour un affichage rapide temporaire).\nAprès une recherche web, si tu cites des sources, ajoute une carte \"sources\" avec les liens utilisés.\nSi l'utilisateur ne demande rien qui justifie une carte, renvoie \"cards\":[].\nN'ajoute jamais de champ en dehors de ce schéma. Le JSON doit être directement parsable.";
+  }
+
+  async function performWebSearch(query){
+    if(!serverUrl) throw new Error("NO_SERVER");
+    const resp = await fetch(serverUrl + '/api/search?q=' + encodeURIComponent(query));
+    if(!resp.ok) throw new Error("SEARCH_ERROR:" + resp.status);
+    const data = await resp.json();
+    return data.results || [];
   }
 
 
-  async function callBackend(userText){
+  async function callBackend(userText, extraContextMessages){
     if(!serverUrl){
       throw new Error("NO_SERVER");
     }
@@ -624,13 +717,16 @@
       contents.push({ role: h.role === 'user' ? 'user' : 'model', parts: [{text: h.content}] });
     }
     contents.push({ role: 'user', parts: [{text: userText}] });
+    if(Array.isArray(extraContextMessages)){
+      extraContextMessages.forEach(m => contents.push(m));
+    }
 
     const resp = await fetch(serverUrl + '/api/gemini', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
         contents: contents,
-        systemInstruction: { parts: [{text: buildSystemPrompt()}] },
+        systemInstruction: { parts: [{text: buildSystemPrompt(!!(extraContextMessages && extraContextMessages.length))}] },
         generationConfig: { responseMimeType: "application/json", temperature: 0.8 }
       })
     });
@@ -660,7 +756,7 @@
         return;
       }
 
-      const raw = await callBackend(text);
+      let raw = await callBackend(text);
 
       let parsed = null;
       try{ parsed = JSON.parse(raw); }
@@ -669,12 +765,36 @@
         if(m){ try{ parsed = JSON.parse(m[0]); }catch(e2){} }
       }
 
+      // Si l'IA demande une recherche web, on l'exécute puis on la rappelle avec les résultats
+      if(parsed && parsed.action === 'search_web' && parsed.query){
+        setStatus('busy', "Je cherche sur le web…");
+        try{
+          const results = await performWebSearch(parsed.query);
+          const resultsText = results.length
+            ? "RESULTATS_RECHERCHE pour \"" + parsed.query + "\" :\n" + results.map((r,i)=> (i+1) + ". " + r.title + " — " + r.snippet + " (" + r.url + ")").join('\n')
+            : "RESULTATS_RECHERCHE pour \"" + parsed.query + "\" : aucun résultat trouvé.";
+
+          setStatus('busy', "Je réfléchis…");
+          raw = await callBackend(text, [{ role:'user', parts:[{text: resultsText}] }]);
+          try{ parsed = JSON.parse(raw); }
+          catch(e){
+            const m = raw.match(/\{[\s\S]*\}/);
+            if(m){ try{ parsed = JSON.parse(m[0]); }catch(e2){ parsed = null; } }
+            else { parsed = null; }
+          }
+        }catch(searchErr){
+          addSystem("La recherche web a échoué, je réponds sans.");
+          parsed = { spoken: "Je n'ai pas réussi à chercher sur le web pour l'instant.", cards: [] };
+        }
+      }
+
       history.push({role:'user', content:text});
 
-      if(parsed && typeof parsed === 'object'){
+      if(parsed && typeof parsed === 'object' && !parsed.action){
         const spoken = parsed.spoken || "Voilà.";
         history.push({role:'model', content: spoken});
         addMsg('assistant', spoken);
+        persistCurrentConversation();
 
         if(Array.isArray(parsed.cards)){
           parsed.cards.forEach(c => spawnCard(c));
@@ -686,6 +806,7 @@
       } else {
         history.push({role:'model', content: raw});
         addMsg('assistant', raw);
+        persistCurrentConversation();
         isThinking = false;
         if(mode === 'continuous'){ await speak(raw); startListening(); }
         else { setStatus('', "Prêt"); speak(raw); }
@@ -785,6 +906,10 @@
       const preview = (c.content || '').slice(0, 220);
       bodyHtml = `<div style="white-space:pre-wrap;">${escapeHtml(preview)}${(c.content||'').length>220 ? '…' : ''}</div>`;
       actionsHtml = `<div class="fcard-actions"><button data-act="openfile" class="primary">Voir dans Mes fichiers</button></div>`;
+    } else if(c.type === 'sources'){
+      headLabel = (c.title || 'Sources');
+      const links = Array.isArray(c.links) ? c.links : [];
+      bodyHtml = '<div>' + links.map(l => `<div style="margin-bottom:8px;"><a href="${escapeHtml(l.url||'#')}" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:none;word-break:break-word;">${escapeHtml(l.title || l.url || 'Source')}</a></div>`).join('') + '</div>';
     } else {
       headLabel = '-';
       bodyHtml = `<div>${escapeHtml(JSON.stringify(c))}</div>`;
@@ -989,8 +1114,117 @@
 
   clearCardsBtn.addEventListener('click', ()=>{ cardsLayer.innerHTML = ''; buzz(15); });
 
+  // ================= conversation history (localStorage) =================
+  const CONV_KEY = 'jarvis_conversations_v1';
+
+  function loadConversations(){
+    try{ return JSON.parse(localStorage.getItem(CONV_KEY) || '[]'); }
+    catch(e){ return []; }
+  }
+  function saveConversations(list){
+    localStorage.setItem(CONV_KEY, JSON.stringify(list));
+  }
+  function titleFromHistory(h){
+    const firstUser = h.find(m => m.role === 'user');
+    if(!firstUser) return 'Nouvelle discussion';
+    return firstUser.content.slice(0, 40) + (firstUser.content.length > 40 ? '…' : '');
+  }
+  function persistCurrentConversation(){
+    if(history.length === 0) return; // rien à sauvegarder
+    const list = loadConversations();
+    if(currentConvId){
+      const existing = list.find(c => c.id === currentConvId);
+      if(existing){
+        existing.history = history;
+        existing.updatedAt = Date.now();
+        saveConversations(list);
+        return;
+      }
+    }
+    const conv = {
+      id: 'conv_' + Date.now() + '_' + Math.floor(Math.random()*10000),
+      title: titleFromHistory(history),
+      history: history,
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    };
+    list.unshift(conv);
+    saveConversations(list);
+    currentConvId = conv.id;
+  }
+  function formatDate(ts){
+    const d = new Date(ts);
+    const now = new Date();
+    const sameDay = d.toDateString() === now.toDateString();
+    if(sameDay) return d.toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'});
+    return d.toLocaleDateString('fr-FR', {day:'2-digit', month:'2-digit'});
+  }
+  function renderHistoryList(){
+    const list = loadConversations().slice().sort((a,b)=> b.updatedAt - a.updatedAt);
+    historyList.innerHTML = '';
+    historyEmpty.classList.toggle('show', list.length === 0);
+    list.forEach(conv=>{
+      const row = document.createElement('div');
+      row.className = 'file-row';
+      row.innerHTML = `
+        <span class="file-icon">💬</span>
+        <div class="file-info">
+          <div class="file-name">${escapeHtml(conv.title)}</div>
+          <div class="file-preview">${conv.history.length} message${conv.history.length>1?'s':''}</div>
+        </div>
+        <span class="file-date">${formatDate(conv.updatedAt)}</span>
+        <button class="file-delete" data-del="${conv.id}"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>
+      `;
+      row.addEventListener('click', (e)=>{
+        if(e.target.closest('[data-del]')) return;
+        resumeConversation(conv.id);
+      });
+      row.querySelector('[data-del]').addEventListener('click', (e)=>{
+        e.stopPropagation();
+        deleteConversation(conv.id);
+      });
+      historyList.appendChild(row);
+    });
+  }
+  function resumeConversation(id){
+    const list = loadConversations();
+    const conv = list.find(c => c.id === id);
+    if(!conv) return;
+    persistCurrentConversation();
+    history = conv.history;
+    currentConvId = conv.id;
+    chat.innerHTML = '';
+    if(history.length === 0){
+      chat.appendChild(emptyState);
+      emptyState.style.display = '';
+    } else {
+      history.forEach(m=>{
+        addMsg(m.role === 'user' ? 'user' : 'assistant', m.content);
+      });
+    }
+    cardsLayer.innerHTML = '';
+    historyBackdrop.classList.remove('open');
+  }
+  function deleteConversation(id){
+    const list = loadConversations().filter(c => c.id !== id);
+    saveConversations(list);
+    if(id === currentConvId) currentConvId = null;
+    renderHistoryList();
+    buzz(15);
+  }
+
+  historyBtn.addEventListener('click', ()=>{
+    persistCurrentConversation();
+    renderHistoryList();
+    historyBackdrop.classList.add('open');
+  });
+  closeHistory.addEventListener('click', ()=> historyBackdrop.classList.remove('open'));
+  historyBackdrop.addEventListener('click', (e)=>{ if(e.target===historyBackdrop) historyBackdrop.classList.remove('open'); });
+
   resetBtn.addEventListener('click', ()=>{
+    persistCurrentConversation();
     history = [];
+    currentConvId = null;
     chat.innerHTML = '';
     chat.appendChild(emptyState);
     emptyState.style.display = '';
@@ -1000,6 +1234,7 @@
     setStatus('', "Prêt");
     buzz(15);
   });
+
 
   micBtn.addEventListener('click', ()=>{
     if(mode === 'tap'){

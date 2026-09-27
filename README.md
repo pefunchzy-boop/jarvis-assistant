@@ -92,6 +92,14 @@ d'accueil (pas juste ouverte dans Safari) et depuis iOS 16.4 minimum.
 Toujours dans les réglages de l'app Appel : choisis entre amical, formel,
 direct, ou avec humour. Ça change la façon dont l'assistant te répond.
 
+## Recherche web
+
+L'assistant peut chercher sur le web (via DuckDuckGo, gratuit, sans clé)
+quand la question porte sur une actualité, un fait récent, ou une info
+qu'il ne peut pas connaître de mémoire. Ça passe automatiquement par ton
+serveur Render (route `/api/search`), pas besoin de configuration
+supplémentaire. Les sources utilisées apparaissent dans une carte dédiée.
+
 ## Mettre à jour le code plus tard
 
 Dans GitHub, ouvre le fichier à modifier, clique l'icône crayon, colle le
