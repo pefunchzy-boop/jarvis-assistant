@@ -10,6 +10,7 @@ app.use(cors()); // ouvert à tous les domaines pour simplifier ; à restreindre
 app.use(express.json({ limit: '2mb' }));
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
+const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID; // optionnel, pour la recherche de musique libre de droits
 const MODEL = 'gemini-3.5-flash-lite';
 
 app.get('/', (req, res) => {
@@ -45,45 +46,89 @@ app.post('/api/gemini', async (req, res) => {
   }
 });
 
-// Recherche web gratuite, sans clé, via DuckDuckGo (résultats HTML analysés côté serveur).
+// Recherche web via l'outil officiel "Grounding with Google Search" de Gemini.
+// Utilise la même clé GEMINI_API_KEY, pas de scraping (plus fiable que DuckDuckGo
+// depuis un serveur cloud, qui bloque souvent ces requêtes).
 app.get('/api/search', async (req, res) => {
   const query = (req.query.q || '').toString().trim();
   if (!query) {
     return res.status(400).json({ error: 'Paramètre q manquant.' });
   }
+  if (!GEMINI_KEY) {
+    return res.status(500).json({ error: 'GEMINI_API_KEY non configurée sur le serveur.' });
+  }
 
   try {
-    const ddgResp = await fetch(
-      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`,
+    const geminiResp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`,
       {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; JarvisAssistant/1.0)',
-        },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [{ text: `Recherche sur le web et résume de façon factuelle et concise (en français, 5 phrases maximum) : ${query}` }],
+          }],
+          tools: [{ google_search: {} }],
+        }),
       }
     );
-    const html = await ddgResp.text();
 
-    // Extraction simple des résultats : titre, lien, extrait
-    const results = [];
-    const resultBlockRegex = /<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?<a[^>]*class="result__snippet"[^>]*>([\s\S]*?)<\/a>/g;
-    let match;
-    const stripTags = (s) => s.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').trim();
-
-    while ((match = resultBlockRegex.exec(html)) !== null && results.length < 6) {
-      let link = match[1];
-      // DuckDuckGo enveloppe parfois le lien réel dans un paramètre uddg=
-      const uddgMatch = link.match(/uddg=([^&]+)/);
-      if (uddgMatch) {
-        link = decodeURIComponent(uddgMatch[1]);
-      }
-      results.push({
-        title: stripTags(match[2]),
-        url: link,
-        snippet: stripTags(match[3]),
-      });
+    const data = await geminiResp.json();
+    if (!geminiResp.ok) {
+      return res.status(geminiResp.status).json({ error: data });
     }
 
+    const candidate = data.candidates && data.candidates[0];
+    const summary = candidate && candidate.content && candidate.content.parts
+      ? candidate.content.parts.map(p => p.text || '').join('').trim()
+      : '';
+
+    // Sources fournies par le grounding
+    const chunks = (candidate && candidate.groundingMetadata && candidate.groundingMetadata.groundingChunks) || [];
+    const results = [];
+    if (summary) {
+      results.push({ title: 'Synthèse de la recherche', url: '', snippet: summary });
+    }
+    chunks.slice(0, 5).forEach(c => {
+      if (c.web) {
+        results.push({ title: c.web.title || c.web.uri, url: c.web.uri, snippet: '' });
+      }
+    });
+
     res.json({ query, results });
+  } catch (err) {
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// Recherche de musique libre de droits (Creative Commons) via Jamendo, gratuit.
+// Nécessite un client_id Jamendo gratuit (inscription sur devportal.jamendo.com),
+// mis dans la variable d'environnement JAMENDO_CLIENT_ID sur Render.
+app.get('/api/music', async (req, res) => {
+  const query = (req.query.q || '').toString().trim();
+  if (!query) {
+    return res.status(400).json({ error: 'Paramètre q manquant.' });
+  }
+  if (!JAMENDO_CLIENT_ID) {
+    return res.status(500).json({ error: 'JAMENDO_CLIENT_ID non configurée sur le serveur.' });
+  }
+
+  try {
+    const url = `https://api.jamendo.com/v3.0/tracks/?client_id=${encodeURIComponent(JAMENDO_CLIENT_ID)}&format=json&limit=6&search=${encodeURIComponent(query)}&include=musicinfo`;
+    const jResp = await fetch(url);
+    const data = await jResp.json();
+
+    const tracks = (data.results || []).map(t => ({
+      name: t.name,
+      artist: t.artist_name,
+      duration: t.duration,
+      audio: t.audio,
+      image: t.image,
+      jamendo_url: t.shareurl,
+    }));
+
+    res.json({ query, tracks });
   } catch (err) {
     res.status(500).json({ error: String(err) });
   }

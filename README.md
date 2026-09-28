@@ -94,11 +94,34 @@ direct, ou avec humour. Ça change la façon dont l'assistant te répond.
 
 ## Recherche web
 
-L'assistant peut chercher sur le web (via DuckDuckGo, gratuit, sans clé)
+L'assistant peut chercher sur le web (via l'outil intégré de Gemini, « Grounding with Google Search », avec ta clé Gemini existante, quota gratuit quotidien limité)
 quand la question porte sur une actualité, un fait récent, ou une info
 qu'il ne peut pas connaître de mémoire. Ça passe automatiquement par ton
 serveur Render (route `/api/search`), pas besoin de configuration
 supplémentaire. Les sources utilisées apparaissent dans une carte dédiée.
+
+## Musique
+
+Deux façons de faire de la musique dans l'app, selon la demande :
+
+- **Composer une partition** ("compose-moi une mélodie", "écris une
+  partition") → l'IA génère une vraie petite partition (notation ABC),
+  affichée et jouable directement dans l'app (bouton ▶), gratuit, sans
+  clé (bibliothèque abcjs).
+- **Écouter un morceau existant** ("mets-moi une musique calme",
+  "trouve-moi un son d'ambiance") → recherche dans le catalogue Creative
+  Commons de Jamendo (musique réelle, libre de droits, écoutable
+  directement dans la carte).
+
+Pour activer la recherche Jamendo, il faut un `client_id` gratuit :
+1. Inscris-toi sur [devportal.jamendo.com](https://devportal.jamendo.com)
+2. Crée une application, récupère le `client_id` (pas besoin du secret)
+3. Sur Render, ajoute la variable d'environnement `JAMENDO_CLIENT_ID`
+   avec cette valeur
+
+Sans cette variable, la composition de partitions fonctionne quand même
+(elle ne dépend pas de Jamendo) — seule la recherche de musique existante
+sera indisponible.
 
 ## Mettre à jour le code plus tard
 
