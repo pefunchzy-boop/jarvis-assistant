@@ -125,6 +125,36 @@
     z-index:40;
   }
   .fab svg{width:24px;height:24px;stroke:#04120c;fill:none;stroke-width:2.2;}
+  .fab-secondary{
+    right:90px;
+    width:48px;height:48px;
+    background:var(--bg2);
+    border:1px solid var(--line);
+    box-shadow:0 4px 14px rgba(0,0,0,.3);
+  }
+  .fab-secondary svg{width:19px;height:19px;stroke:var(--text);}
+
+  .drop-overlay{
+    position:fixed;
+    inset:0;
+    background:rgba(57,224,164,.12);
+    border:3px dashed var(--accent);
+    z-index:150;
+    display:none;
+    align-items:center;
+    justify-content:center;
+    pointer-events:none;
+  }
+  .drop-overlay.show{display:flex;}
+  .drop-overlay-inner{
+    background:var(--bg3);
+    border:1px solid var(--accent);
+    border-radius:16px;
+    padding:20px 30px;
+    font-size:16px;
+    font-weight:600;
+    color:var(--accent);
+  }
 
   /* editor overlay */
   .editor-overlay{
@@ -228,10 +258,18 @@
 <main id="filesMain">
   <div class="empty-state" id="emptyState">
     <b>Aucun fichier</b>
-    Appuie sur le bouton + pour créer ton premier fichier.
+    Appuie sur le bouton + pour créer ton premier fichier, ou sur 📎 pour en importer un.
   </div>
 </main>
 
+<div class="drop-overlay" id="dropOverlay">
+  <div class="drop-overlay-inner">📥 Dépose ton fichier ici</div>
+</div>
+
+<input type="file" id="fileInput" accept="image/*,.pdf,.txt,.md,.csv,.json" multiple style="display:none;">
+<button class="fab fab-secondary" id="importBtn" title="Importer un fichier">
+  <svg viewBox="0 0 24 24"><path d="M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 1 1 4.24 4.24l-9.19 9.19a1 1 0 1 1-2.12-2.12l7.78-7.78"/></svg>
+</button>
 <button class="fab" id="newFileBtn">
   <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
 </button>
@@ -245,6 +283,7 @@
     </button>
   </div>
   <textarea class="editor-textarea" id="editorContent" placeholder="Écris ton contenu ici, ou appuie sur le micro pour dicter…"></textarea>
+  <div id="mediaPreview" style="display:none;flex:1;overflow-y:auto;padding:16px;"></div>
   <div class="editor-actions">
     <button id="deleteBtn">Supprimer</button>
     <button id="saveBtn" class="primary">Enregistrer</button>
@@ -264,10 +303,14 @@
   const emptyState = document.getElementById('emptyState');
   const searchInput = document.getElementById('searchInput');
   const newFileBtn = document.getElementById('newFileBtn');
+  const importBtn = document.getElementById('importBtn');
+  const fileInput = document.getElementById('fileInput');
+  const dropOverlay = document.getElementById('dropOverlay');
   const editorOverlay = document.getElementById('editorOverlay');
   const closeEditorBtn = document.getElementById('closeEditorBtn');
   const editorTitle = document.getElementById('editorTitle');
   const editorContent = document.getElementById('editorContent');
+  const mediaPreview = document.getElementById('mediaPreview');
   const saveBtn = document.getElementById('saveBtn');
   const deleteBtn = document.getElementById('deleteBtn');
   const toast = document.getElementById('toast');
@@ -313,7 +356,9 @@
   function deleteFile(id){
     saveFiles(loadFiles().filter(x=>x.id!==id));
   }
-  function fileIconFor(name){
+  function fileIconFor(name, content){
+    if(typeof content === 'string' && content.startsWith('data:image/')) return '🖼';
+    if(typeof content === 'string' && content.startsWith('data:application/pdf')) return '📕';
     const ext = (name.split('.').pop() || '').toLowerCase();
     if(['md','markdown'].includes(ext)) return '📝';
     if(['json'].includes(ext)) return '🗂';
@@ -357,9 +402,10 @@
     files.forEach(f=>{
       const row = document.createElement('div');
       row.className = 'file-row';
-      const preview = (f.content || '').replace(/\s+/g,' ').trim().slice(0, 70);
+      const isMedia = typeof f.content === 'string' && f.content.startsWith('data:');
+      const preview = isMedia ? 'Fichier importé' : (f.content || '').replace(/\s+/g,' ').trim().slice(0, 70);
       row.innerHTML = `
-        <span class="file-icon">${fileIconFor(f.name)}</span>
+        <span class="file-icon">${fileIconFor(f.name, f.content)}</span>
         <div class="file-info">
           <div class="file-name">${escapeHtml(f.name)}</div>
           <div class="file-preview">${escapeHtml(preview || 'Vide')}</div>
@@ -377,12 +423,29 @@
       if(!f) return;
       currentId = id;
       editorTitle.value = f.name;
-      editorContent.value = f.content || '';
+      const isMedia = typeof f.content === 'string' && f.content.startsWith('data:');
+      if(isMedia){
+        if(f.content.startsWith('data:image/')){
+          editorContent.style.display = 'none';
+          mediaPreview.innerHTML = `<img src="${f.content}" style="max-width:100%;border-radius:10px;display:block;margin:0 auto;">`;
+          mediaPreview.style.display = 'block';
+        } else {
+          editorContent.style.display = 'none';
+          mediaPreview.innerHTML = `<div style="text-align:center;color:var(--dim);padding:40px 20px;">📄 Fichier PDF importé<br>(non prévisualisable ici, mais Jarvis peut l'analyser si tu le mentionnes par son nom)</div>`;
+          mediaPreview.style.display = 'block';
+        }
+      } else {
+        editorContent.style.display = '';
+        mediaPreview.style.display = 'none';
+        editorContent.value = f.content || '';
+      }
       deleteBtn.style.display = '';
     } else {
       currentId = null;
       editorTitle.value = '';
       editorContent.value = '';
+      editorContent.style.display = '';
+      mediaPreview.style.display = 'none';
       deleteBtn.style.display = 'none';
     }
     editorOverlay.classList.add('open');
@@ -394,10 +457,98 @@
   }
 
   newFileBtn.addEventListener('click', ()=>{ openEditor(null); buzz(15); });
+
+  // ---- import de fichiers (texte, image, PDF) ----
+  const TEXT_EXT = ['txt','md','markdown','csv','json'];
+
+  function readFileAsText(file){
+    return new Promise((resolve, reject)=>{
+      const r = new FileReader();
+      r.onload = ()=> resolve(r.result);
+      r.onerror = reject;
+      r.readAsText(file);
+    });
+  }
+  function readFileAsDataURL(file){
+    return new Promise((resolve, reject)=>{
+      const r = new FileReader();
+      r.onload = ()=> resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(file);
+    });
+  }
+
+  async function importFile(file){
+    const ext = (file.name.split('.').pop() || '').toLowerCase();
+    try{
+      if(TEXT_EXT.includes(ext)){
+        const text = await readFileAsText(file);
+        createFile(file.name, text);
+      } else if(file.type.startsWith('image/') || ext === 'pdf'){
+        const dataUrl = await readFileAsDataURL(file);
+        // stocké tel quel (data:...;base64,...) — Jarvis peut le lire et l'analyser sur demande
+        createFile(file.name, dataUrl);
+      } else {
+        showToast('Type de fichier non pris en charge : ' + file.name);
+        return;
+      }
+      showToast('Importé : ' + file.name);
+    }catch(e){
+      showToast('Échec import : ' + file.name);
+    }
+    render();
+  }
+
+  async function importFiles(fileList){
+    const files = Array.from(fileList || []);
+    for(const f of files){
+      await importFile(f);
+    }
+  }
+
+  importBtn.addEventListener('click', ()=>{ fileInput.click(); });
+  fileInput.addEventListener('change', ()=>{
+    importFiles(fileInput.files);
+    fileInput.value = '';
+  });
+
+  let dragCounter = 0;
+  window.addEventListener('dragenter', (e)=>{
+    e.preventDefault();
+    dragCounter++;
+    dropOverlay.classList.add('show');
+  });
+  window.addEventListener('dragover', (e)=>{ e.preventDefault(); });
+  window.addEventListener('dragleave', (e)=>{
+    dragCounter--;
+    if(dragCounter <= 0){ dropOverlay.classList.remove('show'); dragCounter = 0; }
+  });
+  window.addEventListener('drop', (e)=>{
+    e.preventDefault();
+    dragCounter = 0;
+    dropOverlay.classList.remove('show');
+    if(e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length){
+      importFiles(e.dataTransfer.files);
+    }
+  });
+
   closeEditorBtn.addEventListener('click', closeEditor);
 
   saveBtn.addEventListener('click', ()=>{
     const name = editorTitle.value.trim() || 'sans-titre.txt';
+    const isMediaOpen = mediaPreview.style.display !== 'none';
+    if(isMediaOpen){
+      // fichier importé (image/PDF) : on ne modifie que le nom, pas le contenu binaire
+      if(currentId){
+        const files = loadFiles();
+        const f = files.find(x=>x.id===currentId);
+        if(f){ f.name = name; f.updatedAt = Date.now(); saveFiles(files); }
+      }
+      buzz(15);
+      showToast('Enregistré');
+      render();
+      return;
+    }
     const content = editorContent.value;
     if(currentId){
       updateFile(currentId, name, content);

@@ -832,7 +832,7 @@
     } else {
       searchLine = "Si la question porte sur une info récente, actuelle, ou que tu ne peux pas connaître avec certitude (actualité, météo précise, prix, score, date d'un événement récent, fait vérifiable en ligne), NE REPONDS PAS de mémoire : utilise plutôt l'action \"search_web\" au lieu de \"spoken\"+\"cards\".";
     }
-    return "Tu es un assistant vocal, façon Jarvis, concis. " + toneLine + " Tu réponds en français, à l'oral donc des phrases courtes et naturelles, jamais de listes à puces ni de formatage markdown (pas d'astérisques, pas de titres).\n\n" + searchLine + "\n\nTu peux, en plus de parler, faire apparaître des cartes flottantes à l'écran de l'utilisateur (qu'il peut ensuite déplacer du doigt). Tu peux déclencher PLUSIEURS cartes en une seule réponse si la demande le justifie.\n\nRéponds TOUJOURS avec UN SEUL objet JSON strictement valide, rien d'autre autour (pas de balises code). Deux formats possibles :\n\n1) Réponse normale :\n{\"spoken\":\"ta réponse orale, courte et naturelle\",\"cards\":[ ... liste de 0 à 4 cartes ... ]}\n\n2) Pour déclencher une recherche web (uniquement si nécessaire, voir consigne ci-dessus) :\n{\"action\":\"search_web\",\"query\":\"la requête de recherche la plus efficace possible, en quelques mots\"}\n\nChaque carte est un objet avec un champ \"type\" parmi :\n- \"note\" : {\"type\":\"note\",\"title\":\"titre court\",\"text\":\"le contenu texte à afficher\"}\n- \"image\" : {\"type\":\"image\",\"title\":\"titre court\",\"image_prompt\":\"description en anglais précise et visuelle\"}\n- \"linkedin_post\" : {\"type\":\"linkedin_post\",\"title\":\"Post LinkedIn\",\"post_text\":\"texte complet du post, ton professionnel, 2-3 hashtags max\",\"image_prompt\":\"description en anglais pour une image d'illustration\"}\n- \"weather\" : {\"type\":\"weather\",\"title\":\"nom de la ville\",\"city\":\"nom de la ville tel que demandé\"}\n- \"timer\" : {\"type\":\"timer\",\"title\":\"titre court\",\"seconds\":durée en secondes (nombre entier)}\n- \"calc\" : {\"type\":\"calc\",\"title\":\"titre court\",\"expression\":\"expression mathématique en JavaScript valide\",\"label\":\"description courte du résultat\"}\n- \"checklist\" : {\"type\":\"checklist\",\"title\":\"titre court\",\"items\":[\"tâche 1\",\"tâche 2\"]}\n- \"file\" : {\"type\":\"file\",\"filename\":\"nom-du-fichier.txt\",\"content\":\"le contenu complet du fichier à enregistrer\"}\n- \"sources\" : {\"type\":\"sources\",\"title\":\"Sources\",\"links\":[{\"title\":\"titre du site\",\"url\":\"url complète\"}]}\n- \"sheet_music\" : {\"type\":\"sheet_music\",\"title\":\"titre du morceau\",\"abc\":\"la partition complète en notation ABC standard, avec en-tête X:1, T:titre, M:mesure (ex 4/4), L:durée par défaut (ex 1/8), K:tonalité, puis les notes\"}\n- \"music_search\" : {\"type\":\"music_search\",\"query\":\"termes de recherche pour trouver un morceau existant libre de droits (genre, ambiance, style)\"}\n\nSi l'utilisateur demande de créer, écrire, sauvegarder un fichier ou une note longue à garder, utilise le type \"file\" (pas \"note\", qui est pour un affichage rapide temporaire).\nSi l'utilisateur demande de composer, écrire ou créer un morceau, une mélodie, une partition, utilise \"sheet_music\" (tu composes une vraie petite partition jouable en ABC, simple, quelques mesures).\nSi l'utilisateur demande une musique, une chanson, une ambiance sonore, un fond musical À ÉCOUTER (pas à composer), utilise \"music_search\" pour chercher un morceau existant libre de droits, plutôt que \"sheet_music\".\nAprès une recherche web, si tu cites des sources, ajoute une carte \"sources\" avec les liens utilisés.\nSi l'utilisateur ne demande rien qui justifie une carte, renvoie \"cards\":[].\nN'ajoute jamais de champ en dehors de ce schéma. Le JSON doit être directement parsable.";
+    return "Tu es un assistant vocal, façon Jarvis, concis. " + toneLine + " Tu réponds en français, à l'oral donc des phrases courtes et naturelles, jamais de listes à puces ni de formatage markdown (pas d'astérisques, pas de titres).\n\n" + searchLine + "\n\nTu peux, en plus de parler, faire apparaître des cartes flottantes à l'écran de l'utilisateur (qu'il peut ensuite déplacer du doigt). Tu peux déclencher PLUSIEURS cartes en une seule réponse si la demande le justifie.\n\nRéponds TOUJOURS avec UN SEUL objet JSON strictement valide, rien d'autre autour (pas de balises code). Deux formats possibles :\n\n1) Réponse normale :\n{\"spoken\":\"ta réponse orale, courte et naturelle\",\"cards\":[ ... liste de 0 à 4 cartes ... ]}\n\n2) Pour déclencher une recherche web (uniquement si nécessaire, voir consigne ci-dessus) :\n{\"action\":\"search_web\",\"query\":\"la requête de recherche la plus efficace possible, en quelques mots\"}\n\nChaque carte est un objet avec un champ \"type\" parmi :\n- \"note\" : {\"type\":\"note\",\"title\":\"titre court\",\"text\":\"le contenu texte à afficher\"}\n- \"image\" : {\"type\":\"image\",\"title\":\"titre court\",\"image_prompt\":\"description en anglais précise et visuelle\"}\n- \"linkedin_post\" : {\"type\":\"linkedin_post\",\"title\":\"Post LinkedIn\",\"post_text\":\"texte complet du post, ton professionnel, 2-3 hashtags max\",\"image_prompt\":\"description en anglais pour une image d'illustration\"}\n- \"weather\" : {\"type\":\"weather\",\"title\":\"nom de la ville\",\"city\":\"nom de la ville tel que demandé\"}\n- \"timer\" : {\"type\":\"timer\",\"title\":\"titre court\",\"seconds\":durée en secondes (nombre entier)}\n- \"calc\" : {\"type\":\"calc\",\"title\":\"titre court\",\"expression\":\"expression mathématique en JavaScript valide\",\"label\":\"description courte du résultat\"}\n- \"checklist\" : {\"type\":\"checklist\",\"title\":\"titre court\",\"items\":[\"tâche 1\",\"tâche 2\"]}\n- \"file\" : {\"type\":\"file\",\"filename\":\"nom-du-fichier.txt\",\"content\":\"le texte à enregistrer\",\"mode\":\"replace\"} — mode \"replace\" (par défaut) écrase tout le contenu du fichier s'il existe déjà (même nom), mode \"append\" ajoute le texte à la suite du contenu existant sans l'effacer. Utilise \"append\" quand l'utilisateur veut ajouter, continuer, compléter un fichier existant plutôt que le remplacer entièrement.\n- \"sources\" : {\"type\":\"sources\",\"title\":\"Sources\",\"links\":[{\"title\":\"titre du site\",\"url\":\"url complète\"}]}\n- \"sheet_music\" : {\"type\":\"sheet_music\",\"title\":\"titre du morceau\",\"abc\":\"la partition complète en notation ABC standard, avec en-tête X:1, T:titre, M:mesure (ex 4/4), L:durée par défaut (ex 1/8), K:tonalité, puis les notes\"}\n- \"music_search\" : {\"type\":\"music_search\",\"query\":\"termes de recherche pour trouver un morceau existant libre de droits (genre, ambiance, style)\"}\n\nSi l'utilisateur demande de créer, écrire, sauvegarder un fichier ou une note longue à garder, utilise le type \"file\" (pas \"note\", qui est pour un affichage rapide temporaire). Si un fichier avec le même nom existe déjà et que l'utilisateur veut le modifier ou continuer dessus, réutilise EXACTEMENT le même nom de fichier pour que la mise à jour s'applique au bon fichier plutôt que d'en créer un nouveau.\nSi l'utilisateur demande de composer, écrire ou créer un morceau, une mélodie, une partition, utilise \"sheet_music\" (tu composes une vraie petite partition jouable en ABC, simple, quelques mesures).\nSi l'utilisateur demande une musique, une chanson, une ambiance sonore, un fond musical À ÉCOUTER (pas à composer), utilise \"music_search\" pour chercher un morceau existant libre de droits, plutôt que \"sheet_music\".\nAprès une recherche web, si tu cites des sources, ajoute une carte \"sources\" avec les liens utilisés.\nSi l'utilisateur ne demande rien qui justifie une carte, renvoie \"cards\":[].\nN'ajoute jamais de champ en dehors de ce schéma. Le JSON doit être directement parsable.";
   }
 
   async function performWebSearch(query){
@@ -852,7 +852,33 @@
   }
 
 
-  async function callBackend(userText, extraContextMessages){
+  function getStoredFiles(){
+    const FILES_KEY = 'assistant_files_v1';
+    try{ return JSON.parse(localStorage.getItem(FILES_KEY) || '[]'); }catch(e){ return []; }
+  }
+
+  function isDataUrlFile(f){
+    return typeof f.content === 'string' && f.content.startsWith('data:');
+  }
+
+  function buildFilesContextText(){
+    const files = getStoredFiles();
+    if(!files.length) return '';
+    const lines = files.map(f=>{
+      if(isDataUrlFile(f)) return '- ' + f.name + ' (image ou PDF importé, disponible en pièce jointe si demandé)';
+      const preview = (f.content || '').slice(0, 500);
+      return '- ' + f.name + ' : ' + preview + (f.content && f.content.length > 500 ? '…' : '');
+    });
+    return "FICHIERS_DISPONIBLES (dans l'app Mes fichiers de l'utilisateur) :\n" + lines.join('\n');
+  }
+
+  function findStoredFileByName(name){
+    const files = getStoredFiles();
+    const lower = (name||'').toLowerCase();
+    return files.find(f => f.name.toLowerCase() === lower) || files.find(f => f.name.toLowerCase().includes(lower));
+  }
+
+  async function callBackend(userText, extraContextMessages, attachFiles){
     if(!serverUrl){
       throw new Error("NO_SERVER");
     }
@@ -860,17 +886,31 @@
     for(const h of history){
       contents.push({ role: h.role === 'user' ? 'user' : 'model', parts: [{text: h.content}] });
     }
-    contents.push({ role: 'user', parts: [{text: userText}] });
+
+    const userParts = [{text: userText}];
+    if(Array.isArray(attachFiles)){
+      attachFiles.forEach(f=>{
+        const m = f.content.match(/^data:([^;]+);base64,(.+)$/);
+        if(m){
+          userParts.push({ inline_data: { mime_type: m[1], data: m[2] } });
+        }
+      });
+    }
+    contents.push({ role: 'user', parts: userParts });
+
     if(Array.isArray(extraContextMessages)){
       extraContextMessages.forEach(m => contents.push(m));
     }
+
+    const filesContext = buildFilesContextText();
+    const systemText = buildSystemPrompt(!!(extraContextMessages && extraContextMessages.length)) + (filesContext ? "\n\n" + filesContext : '');
 
     const resp = await fetch(serverUrl + '/api/gemini', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
         contents: contents,
-        systemInstruction: { parts: [{text: buildSystemPrompt(!!(extraContextMessages && extraContextMessages.length))}] },
+        systemInstruction: { parts: [{text: systemText}] },
         generationConfig: { responseMimeType: "application/json", temperature: 0.8 }
       })
     });
@@ -900,7 +940,13 @@
         return;
       }
 
-      let raw = await callBackend(text);
+      // Si le message mentionne un fichier image/PDF importé par son nom, on l'attache à la requête
+      const mentionedImageFiles = getStoredFiles()
+        .filter(isDataUrlFile)
+        .filter(f => text.toLowerCase().includes(f.name.toLowerCase().replace(/\.[a-z0-9]+$/, '')))
+        .slice(0, 3);
+
+      let raw = await callBackend(text, null, mentionedImageFiles.length ? mentionedImageFiles : null);
 
       let parsed = null;
       try{ parsed = JSON.parse(raw); }
@@ -927,7 +973,8 @@
             else { parsed = null; }
           }
         }catch(searchErr){
-          addSystem("La recherche web a échoué, je réponds sans.");
+          const em = (searchErr && searchErr.message) || 'inconnue';
+          addSystem("La recherche web a échoué (" + em + "), je réponds sans.");
           parsed = { spoken: "Je n'ai pas réussi à chercher sur le web pour l'instant.", cards: [] };
         }
       }
@@ -965,9 +1012,15 @@
       } else if(msg.startsWith('API_ERROR:401') || msg.startsWith('API_ERROR:403')){
         addSystem("Accès refusé par le serveur. Vérifie l'URL dans les réglages.");
       } else if(msg.startsWith('API_ERROR:429')){
-        addSystem("Quota atteint pour le moment, réessaie plus tard.");
+        addSystem("Quota Gemini atteint pour le moment (limite journalière ou par minute dépassée), réessaie plus tard.");
+      } else if(msg.startsWith('API_ERROR:')){
+        addSystem("Erreur du serveur : " + msg.replace('API_ERROR:', '').slice(0, 150));
+      } else if(msg === 'EMPTY_RESPONSE'){
+        addSystem("Le serveur a répondu vide. Réessaie.");
+      } else if(msg === 'Failed to fetch' || msg.toLowerCase().includes('network')){
+        addSystem("Impossible de joindre le serveur (réseau coupé ou URL incorrecte). Vérifie ta connexion et l'URL dans les réglages.");
       } else {
-        addSystem("Erreur de connexion au serveur (il met parfois 30-50s à se réveiller après une pause). Réessaie dans un instant.");
+        addSystem("Erreur : " + (msg || 'inconnue') + ". Réessaie dans un instant.");
       }
       if(mode==='continuous') startListening();
     }
@@ -1133,7 +1186,7 @@
       });
     }
     if(c.type === 'file'){
-      saveFileToStorage(c.filename || 'sans-titre.txt', c.content || '');
+      saveFileToStorage(c.filename || 'sans-titre.txt', c.content || '', c.mode || 'replace');
       const openBtn = el.querySelector('[data-act="openfile"]');
       if(openBtn){
         openBtn.addEventListener('click', ()=>{ window.location.href = '../fichiers/'; });
@@ -1221,17 +1274,26 @@
   }
 
 
-  function saveFileToStorage(name, content){
+  function saveFileToStorage(name, content, mode){
+    // mode: 'replace' (défaut) écrase le contenu, 'append' ajoute à la suite du fichier existant
     const FILES_KEY = 'assistant_files_v1';
     let files = [];
     try{ files = JSON.parse(localStorage.getItem(FILES_KEY) || '[]'); }catch(e){ files = []; }
-    files.unshift({
-      id: 'f_' + Date.now() + '_' + Math.floor(Math.random()*10000),
-      name: name,
-      content: content,
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    });
+    const existing = files.find(f => f.name === name);
+    if(existing){
+      existing.content = (mode === 'append' && existing.content)
+        ? existing.content + '\n' + content
+        : content;
+      existing.updatedAt = Date.now();
+    } else {
+      files.unshift({
+        id: 'f_' + Date.now() + '_' + Math.floor(Math.random()*10000),
+        name: name,
+        content: content,
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      });
+    }
     localStorage.setItem(FILES_KEY, JSON.stringify(files));
   }
 
