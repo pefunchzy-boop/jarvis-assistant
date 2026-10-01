@@ -49,14 +49,16 @@ app.post('/api/gemini', async (req, res) => {
 });
 
 // ---- RECHERCHE WEB ----
-// 3 niveaux, du meilleur au plus simple :
-// 1) Grounding Google Search de Gemini (résultat le plus riche, MAIS quota gratuit
-//    très limité : dès qu'il est épuisé, l'API renvoie 429).
-// 2) API officielle DuckDuckGo (Instant Answer JSON) : gratuite, sans clé, sans quota,
-//    utilisable depuis un serveur (ce n'est pas du scraping HTML).
-// 3) API Wikipedia française : gratuite, sans clé, très fiable pour les faits généraux.
-// Si le grounding échoue (quota ou modèle), on retombe automatiquement sur 2 puis 3,
-// pour que la recherche web ne soit JAMAIS totalement en échec.
+// 4 niveaux, du plus riche au plus simple :
+// 1) Grounding Google Search de Gemini : synthèse rédigée + sources fraîches.
+//    MAIS quota gratuit très limité : dès qu'il est épuisé, l'API renvoie 429.
+// 2) Flux RSS Google News (français) : gratuit, sans clé, articles RÉCENTS.
+//    C'est le meilleur fallback pour les questions d'actualité.
+// 3) API officielle DuckDuckGo (Instant Answer JSON) : gratuite, sans clé.
+//    Bon pour les faits généraux, mais renvoie souvent RIEN sur l'actualité.
+// 4) API Wikipedia française : gratuite, fiable pour les faits généraux,
+//    mais jamais à jour sur l'actualité.
+// On essaie dans l'ordre, pour que la recherche ne soit JAMAIS totalement en échec.
 
 const SEARCH_ATTEMPTS = [
   { model: 'gemini-3.5-flash',      toolKey: 'google_search' },
@@ -110,6 +112,50 @@ async function geminiSearchOnce(model, toolKey, query) {
   return results;
 }
 
+function decodeXmlEntities(s) {
+  return (s || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&#(d+);/g, (m, d) => String.fromCharCode(parseInt(d, 10)))
+    .replace(/&amp;/g, '&');
+}
+
+async function googleNewsSearch(query) {
+  // Flux RSS public de Google News (français) : articles récents correspondant à la requête.
+  const url = 'https://news.google.com/rss/search?q=' + encodeURIComponent(query) + '&hl=fr&gl=FR&ceid=FR:fr';
+  const resp = await fetch(url, { headers: { 'User-Agent': 'jarvis-assistant/1.0' } });
+  if (!resp.ok) throw new Error('GoogleNews -> HTTP ' + resp.status);
+  const xml = await resp.text();
+
+  // Les items ressemblent à : <item><title>...</title><link>...</link>...<pubDate>...</pubDate>...</item>
+  const items = [];
+  const itemRe = /<item>([\s\S]*?)<\/item>/g;
+  let m;
+  while ((m = itemRe.exec(xml)) !== null && items.length < 6) {
+    const block = m[1];
+    const title = (block.match(/<title>([\s\S]*?)<\/title>/) || [])[1];
+    const link = (block.match(/<link>([\s\S]*?)<\/link>/) || [])[1];
+    const pubDate = (block.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1];
+    const source = (block.match(/<source[^>]*>([\s\S]*?)<\/source>/) || [])[1];
+    if (title) {
+      let t = decodeXmlEntities(title).trim();
+      // Google News colle le nom du média à la fin du titre : "Titre - Le Monde"
+      const src = source ? decodeXmlEntities(source).trim() : '';
+      if (src && t.endsWith(' - ' + src)) t = t.slice(0, -(' - ' + src).length);
+      items.push({
+        title: t,
+        url: (link || '').trim(),
+        snippet: (pubDate ? 'Publié le ' + decodeXmlEntities(pubDate) : '') + (src ? ' — source : ' + src : ''),
+      });
+    }
+  }
+  if (!items.length) throw new Error('GoogleNews -> aucun article');
+  return items;
+}
+
 async function duckduckgoSearch(query) {
   const url = 'https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=' + encodeURIComponent(query);
   const resp = await fetch(url, { headers: { 'User-Agent': 'jarvis-assistant/1.0' } });
@@ -130,7 +176,6 @@ async function duckduckgoSearch(query) {
 }
 
 async function wikipediaSearch(query) {
-  // 1) recherche des pages, 2) résumé de la meilleure page
   const searchUrl = 'https://fr.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=3&srsearch=' + encodeURIComponent(query);
   const searchResp = await fetch(searchUrl, { headers: { 'User-Agent': 'jarvis-assistant/1.0' } });
   if (!searchResp.ok) throw new Error('Wikipedia -> HTTP ' + searchResp.status);
@@ -163,9 +208,10 @@ app.get('/api/search', async (req, res) => {
     return res.status(400).json({ error: 'Paramètre q manquant.' });
   }
 
+  const errors = [];
+
   // Niveau 1 : grounding Gemini (si la clé existe et le quota n'est pas épuisé)
   if (GEMINI_KEY) {
-    const errors = [];
     for (const attempt of SEARCH_ATTEMPTS) {
       try {
         const results = await geminiSearchOnce(attempt.model, attempt.toolKey, query);
@@ -177,21 +223,31 @@ app.get('/api/search', async (req, res) => {
     // Le grounding a échoué (quota, modèle...) : on continue vers les fallbacks.
   }
 
-  // Niveau 2 : DuckDuckGo (gratuit, sans quota)
+  // Niveau 2 : Google News RSS (actu récente, gratuit, sans quota)
+  try {
+    const results = await googleNewsSearch(query);
+    return res.json({ query, results, via: 'google-news' });
+  } catch (err) {
+    errors.push(String(err && err.message ? err.message : err));
+  }
+
+  // Niveau 3 : DuckDuckGo (faits généraux)
   try {
     const results = await duckduckgoSearch(query);
     return res.json({ query, results, via: 'duckduckgo' });
   } catch (err) {
-    // on continue vers Wikipedia
+    errors.push(String(err && err.message ? err.message : err));
   }
 
-  // Niveau 3 : Wikipedia
+  // Niveau 4 : Wikipedia
   try {
     const results = await wikipediaSearch(query);
     return res.json({ query, results, via: 'wikipedia' });
   } catch (err) {
-    return res.status(502).json({ error: 'Recherche impossible par tous les moyens.' });
+    errors.push(String(err && err.message ? err.message : err));
   }
+
+  res.status(502).json({ error: 'Recherche impossible par tous les moyens. Détails : ' + errors.join(' | ').slice(0, 500) });
 });
 
 // Recherche de musique libre de droits (Creative Commons) via Jamendo, gratuit.
