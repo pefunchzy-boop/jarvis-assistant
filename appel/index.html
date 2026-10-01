@@ -367,6 +367,13 @@
     :root:not([data-theme="dark"]) .msg.assistant{box-shadow:0 1px 2px rgba(0,0,0,.04);}
     :root:not([data-theme="dark"]) .mic-btn,:root:not([data-theme="dark"]) .fcard{box-shadow:0 1px 3px rgba(0,0,0,.06);}
   }
+
+  /* Panneau Mes cartes */
+  .cards-tabs{display:flex;gap:6px;padding:0 16px 10px;}
+  .cards-tabs button{flex:1;border:1px solid var(--line);background:var(--bg2);color:var(--dim);font-size:12.5px;padding:8px;border-radius:100px;cursor:pointer;font-family:inherit;}
+  .cards-tabs button.active{background:var(--accent);color:#04231a;border-color:var(--accent);font-weight:500;}
+  .panel-add{padding:10px 16px 14px;}
+  .panel-add .primary{width:100%;}
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/abcjs/6.4.4/abcjs-basic-min.js"></script>
 </head>
@@ -381,6 +388,9 @@
     </div>
     <button class="icon-btn" id="goFilesBtn" title="Mes fichiers">
       <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>
+    </button>
+    <button class="icon-btn" id="cardsHistoryBtn" title="Mes cartes">
+      <svg viewBox="0 0 24 24"><rect x="3" y="7" width="12" height="12" rx="2"/><path d="M7 3h12a2 2 0 0 1 2 2v12"/></svg>
     </button>
     <button class="icon-btn" id="historyBtn" title="Discussions">
       <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
@@ -563,6 +573,27 @@
     </div>
     <div class="files-list" id="historyList"></div>
     <div class="files-empty" id="historyEmpty">Aucune discussion enregistrée pour l'instant. Elles se sauvegardent automatiquement dès que tu commences à parler à l'assistant.</div>
+  </div>
+</div>
+
+
+<div class="modal-backdrop" id="cardsBackdrop" style="align-items:stretch;">
+  <div class="files-panel">
+    <div class="files-header">
+      <h2>Mes cartes</h2>
+      <button class="icon-btn" id="closeCards"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="cards-tabs">
+      <button id="tabCards" class="active">Cartes</button>
+      <button id="tabFiles">Fichiers</button>
+    </div>
+    <div class="files-list" id="cardsList"></div>
+    <div class="files-empty" id="cardsEmpty">Aucune carte sauvegardée pour l'instant. Chaque carte créée par l'assistant est gardée ici, même après avoir quitté ou changé de discussion. Touche une carte pour la faire réapparaître à l'écran.</div>
+    <div class="files-list" id="panelFilesList" style="display:none;"></div>
+    <div class="files-empty" id="panelFilesEmpty" style="display:none;">Aucun fichier. Touche un fichier texte pour l'ouvrir en carte flottante, ou crée-en un nouveau.</div>
+    <div class="panel-add" id="panelAddWrap" style="display:none;">
+      <button id="addFileCardBtn" class="primary">+ Nouveau fichier</button>
+    </div>
   </div>
 </div>
 
@@ -1032,7 +1063,8 @@
     return m + ':' + String(s).padStart(2,'0');
   }
 
-  function spawnCard(c){
+  function spawnCard(c, opts){
+    opts = opts || {};
     if(!c || !c.type) return;
     hideEmpty();
     buzz(25);
@@ -1132,6 +1164,7 @@
     cardsLayer.appendChild(el);
     makeDraggable(el);
     makeResizable(el);
+    if(!opts.fromPanel) rememberCard(c);
 
     el.querySelector('[data-act="close"]').addEventListener('click', ()=> el.remove());
 
@@ -1552,6 +1585,144 @@
     renderHistoryList();
     buzz(15);
   }
+
+  // ===== Mes cartes : historique des cartes + fichiers en popup =====
+  const CARDS_KEY = 'jarvis_cards_history_v1';
+  const cardsHistoryBtn = document.getElementById('cardsHistoryBtn');
+  const cardsBackdrop = document.getElementById('cardsBackdrop');
+  const closeCardsBtn = document.getElementById('closeCards');
+  const cardsList = document.getElementById('cardsList');
+  const cardsEmpty = document.getElementById('cardsEmpty');
+  const panelFilesList = document.getElementById('panelFilesList');
+  const panelFilesEmpty = document.getElementById('panelFilesEmpty');
+  const tabCardsBtn = document.getElementById('tabCards');
+  const tabFilesBtn = document.getElementById('tabFiles');
+  const panelAddWrap = document.getElementById('panelAddWrap');
+  const addFileCardBtn = document.getElementById('addFileCardBtn');
+  let cardsTab = 'cards';
+
+  function loadCardHistory(){
+    try{ return JSON.parse(localStorage.getItem(CARDS_KEY) || '[]'); }catch(e){ return []; }
+  }
+  function saveCardHistory(list){
+    localStorage.setItem(CARDS_KEY, JSON.stringify(list));
+  }
+  function rememberCard(c){
+    try{
+      const conv = loadConversations().find(x => x.id === currentConvId);
+      const list = loadCardHistory();
+      list.unshift({
+        id: 'cardh_' + Date.now() + '_' + Math.floor(Math.random()*10000),
+        convId: currentConvId || null,
+        convTitle: conv ? conv.title : 'Hors discussion',
+        card: c,
+        createdAt: Date.now()
+      });
+      while(list.length > 80) list.pop();
+      saveCardHistory(list);
+    }catch(e){}
+  }
+  function cardLabel(c){
+    const t = c.type;
+    if(t === 'note') return (c.title ? c.title + ' — ' : '') + (c.text || '').slice(0, 60);
+    if(t === 'image') return c.title || 'Image';
+    if(t === 'linkedin_post') return c.title || 'Post LinkedIn';
+    if(t === 'weather') return 'Météo : ' + (c.city || c.title || '');
+    if(t === 'timer') return 'Minuteur : ' + (c.title || formatTime(Math.max(1, parseInt(c.seconds, 10) || 60)));
+    if(t === 'calc') return 'Calcul : ' + (c.expression || c.label || '');
+    if(t === 'checklist') return c.title || 'Liste';
+    if(t === 'file') return c.filename || 'Fichier';
+    if(t === 'sources') return c.title || 'Sources';
+    if(t === 'sheet_music') return 'Partition : ' + (c.title || '');
+    if(t === 'music_search') return 'Musique : ' + (c.query || '');
+    return t;
+  }
+  const CARD_ICONS = { note:'📝', image:'🖼️', linkedin_post:'💼', weather:'🌤️', timer:'⏱️', calc:'🧮', checklist:'☑️', file:'📄', sources:'🔗', sheet_music:'🎼', music_search:'🎵' };
+
+  function renderCardsPanel(){
+    const list = loadCardHistory();
+    cardsList.innerHTML = '';
+    cardsEmpty.classList.toggle('show', list.length === 0);
+    list.forEach(entry=>{
+      const row = document.createElement('div');
+      row.className = 'file-row';
+      row.innerHTML = `
+        <span class="file-icon">${CARD_ICONS[entry.card.type] || '🗂️'}</span>
+        <div class="file-info">
+          <div class="file-name">${escapeHtml(cardLabel(entry.card))}</div>
+          <div class="file-preview">${escapeHtml(entry.convTitle)}</div>
+        </div>
+        <span class="file-date">${formatDate(entry.createdAt)}</span>
+        <button class="file-delete" data-del="${entry.id}"><svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2m3 0-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>
+      `;
+      row.addEventListener('click', (e)=>{
+        if(e.target.closest('[data-del]')) return;
+        spawnCard(entry.card, { fromPanel: true });
+        cardsBackdrop.classList.remove('open');
+        buzz(15);
+      });
+      row.querySelector('[data-del]').addEventListener('click', (e)=>{
+        e.stopPropagation();
+        saveCardHistory(loadCardHistory().filter(x => x.id !== entry.id));
+        renderCardsPanel();
+        buzz(12);
+      });
+      cardsList.appendChild(row);
+    });
+  }
+  function renderPanelFiles(){
+    const files = getStoredFiles();
+    panelFilesList.innerHTML = '';
+    panelFilesEmpty.classList.toggle('show', files.length === 0);
+    files.forEach(f=>{
+      const row = document.createElement('div');
+      row.className = 'file-row';
+      row.innerHTML = `
+        <span class="file-icon">${isDataUrlFile(f) ? '🖼️' : '📄'}</span>
+        <div class="file-info">
+          <div class="file-name">${escapeHtml(f.name)}</div>
+          <div class="file-preview">${isDataUrlFile(f) ? 'Image ou PDF importé' : escapeHtml((f.content || '').slice(0, 60))}</div>
+        </div>
+        <span class="file-date">${formatDate(f.updatedAt || f.createdAt)}</span>
+      `;
+      row.addEventListener('click', ()=>{
+        if(isDataUrlFile(f)) return; // pas de popup pour les fichiers binaires
+        spawnCard({ type: 'file', filename: f.name, content: f.content }, { fromPanel: true });
+        cardsBackdrop.classList.remove('open');
+        buzz(15);
+      });
+      panelFilesList.appendChild(row);
+    });
+  }
+  function switchCardsTab(t){
+    cardsTab = t;
+    tabCardsBtn.classList.toggle('active', t === 'cards');
+    tabFilesBtn.classList.toggle('active', t === 'files');
+    cardsList.style.display = (t === 'cards') ? '' : 'none';
+    cardsEmpty.style.display = (t === 'cards') ? '' : 'none';
+    panelFilesList.style.display = (t === 'files') ? '' : 'none';
+    panelFilesEmpty.style.display = (t === 'files') ? '' : 'none';
+    panelAddWrap.style.display = (t === 'files') ? '' : 'none';
+    if(t === 'cards'){ renderCardsPanel(); } else { renderPanelFiles(); }
+  }
+  cardsHistoryBtn.addEventListener('click', ()=>{
+    switchCardsTab(cardsTab || 'cards');
+    cardsBackdrop.classList.add('open');
+  });
+  closeCardsBtn.addEventListener('click', ()=> cardsBackdrop.classList.remove('open'));
+  cardsBackdrop.addEventListener('click', (e)=>{ if(e.target === cardsBackdrop) cardsBackdrop.classList.remove('open'); });
+  tabCardsBtn.addEventListener('click', ()=> switchCardsTab('cards'));
+  tabFilesBtn.addEventListener('click', ()=> switchCardsTab('files'));
+  addFileCardBtn.addEventListener('click', ()=>{
+    const name = prompt('Nom du nouveau fichier (ex: idees.txt) :', '');
+    if(!name) return;
+    const finalName = name.includes('.') ? name : name + '.txt';
+    saveFileToStorage(finalName, '', 'replace');
+    renderPanelFiles();
+    spawnCard({ type: 'file', filename: finalName, content: '' }, { fromPanel: true });
+    cardsBackdrop.classList.remove('open');
+    buzz(15);
+  });
 
   historyBtn.addEventListener('click', ()=>{
     persistCurrentConversation();
