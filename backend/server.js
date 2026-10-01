@@ -48,11 +48,16 @@ app.post('/api/gemini', async (req, res) => {
   }
 });
 
-// Recherche web via l'outil officiel "Grounding with Google Search" de Gemini.
-// IMPORTANT : le grounding Google Search n'est PAS disponible sur tous les modèles.
-// Les variantes "lite" (comme gemini-3.5-flash-lite) le refusent souvent avec une erreur 400,
-// et le nommage de l'outil varie selon la version de l'API (google_search / googleSearch).
-// On essaie donc plusieurs combinaisons (modèle + nom d'outil) jusqu'à ce qu'une marche.
+// ---- RECHERCHE WEB ----
+// 3 niveaux, du meilleur au plus simple :
+// 1) Grounding Google Search de Gemini (résultat le plus riche, MAIS quota gratuit
+//    très limité : dès qu'il est épuisé, l'API renvoie 429).
+// 2) API officielle DuckDuckGo (Instant Answer JSON) : gratuite, sans clé, sans quota,
+//    utilisable depuis un serveur (ce n'est pas du scraping HTML).
+// 3) API Wikipedia française : gratuite, sans clé, très fiable pour les faits généraux.
+// Si le grounding échoue (quota ou modèle), on retombe automatiquement sur 2 puis 3,
+// pour que la recherche web ne soit JAMAIS totalement en échec.
+
 const SEARCH_ATTEMPTS = [
   { model: 'gemini-3.5-flash',      toolKey: 'google_search' },
   { model: 'gemini-3.5-flash',      toolKey: 'googleSearch'  },
@@ -93,7 +98,6 @@ async function geminiSearchOnce(model, toolKey, query) {
     throw new Error(`${model}/${toolKey} -> réponse vide`);
   }
 
-  // Sources fournies par le grounding
   const chunks = (candidate && candidate.groundingMetadata && candidate.groundingMetadata.groundingChunks) || [];
   const results = [];
   results.push({ title: 'Synthèse de la recherche', url: '', snippet: summary });
@@ -106,27 +110,88 @@ async function geminiSearchOnce(model, toolKey, query) {
   return results;
 }
 
+async function duckduckgoSearch(query) {
+  const url = 'https://api.duckduckgo.com/?format=json&no_html=1&skip_disambig=1&q=' + encodeURIComponent(query);
+  const resp = await fetch(url, { headers: { 'User-Agent': 'jarvis-assistant/1.0' } });
+  if (!resp.ok) throw new Error('DuckDuckGo -> HTTP ' + resp.status);
+  const data = await resp.json();
+
+  const results = [];
+  if (data.AbstractText) {
+    results.push({ title: data.Heading || 'DuckDuckGo', url: data.AbstractURL || '', snippet: data.AbstractText });
+  }
+  (data.RelatedTopics || []).forEach(t => {
+    if (t.Text && t.FirstURL && results.length < 6) {
+      results.push({ title: t.Text.split(' - ')[0].slice(0, 80), url: t.FirstURL, snippet: t.Text });
+    }
+  });
+  if (!results.length) throw new Error('DuckDuckGo -> aucun résultat');
+  return results;
+}
+
+async function wikipediaSearch(query) {
+  // 1) recherche des pages, 2) résumé de la meilleure page
+  const searchUrl = 'https://fr.wikipedia.org/w/api.php?action=query&list=search&format=json&srlimit=3&srsearch=' + encodeURIComponent(query);
+  const searchResp = await fetch(searchUrl, { headers: { 'User-Agent': 'jarvis-assistant/1.0' } });
+  if (!searchResp.ok) throw new Error('Wikipedia -> HTTP ' + searchResp.status);
+  const searchData = await searchResp.json();
+  const hits = (searchData.query && searchData.query.search) || [];
+  if (!hits.length) throw new Error('Wikipedia -> aucun résultat');
+
+  const results = [];
+  for (const h of hits.slice(0, 3)) {
+    const sumUrl = 'https://fr.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(h.title.replace(/ /g, '_'));
+    const sumResp = await fetch(sumUrl, { headers: { 'User-Agent': 'jarvis-assistant/1.0' } });
+    if (sumResp.ok) {
+      const s = await sumResp.json();
+      results.push({
+        title: s.title || h.title,
+        url: (s.content_urls && s.content_urls.desktop && s.content_urls.desktop.page) || ('https://fr.wikipedia.org/wiki/' + h.title.replace(/ /g, '_')),
+        snippet: s.extract || h.snippet || '',
+      });
+    } else {
+      results.push({ title: h.title, url: 'https://fr.wikipedia.org/wiki/' + h.title.replace(/ /g, '_'), snippet: h.snippet || '' });
+    }
+  }
+  if (!results.length) throw new Error('Wikipedia -> aucun résultat exploitable');
+  return results;
+}
+
 app.get('/api/search', async (req, res) => {
   const query = (req.query.q || '').toString().trim();
   if (!query) {
     return res.status(400).json({ error: 'Paramètre q manquant.' });
   }
-  if (!GEMINI_KEY) {
-    return res.status(500).json({ error: 'GEMINI_API_KEY non configurée sur le serveur.' });
-  }
 
-  let lastError = null;
-  for (const attempt of SEARCH_ATTEMPTS) {
-    try {
-      const results = await geminiSearchOnce(attempt.model, attempt.toolKey, query);
-      return res.json({ query, results });
-    } catch (err) {
-      lastError = String(err && err.message ? err.message : err);
-      // On essaie la combinaison suivante.
+  // Niveau 1 : grounding Gemini (si la clé existe et le quota n'est pas épuisé)
+  if (GEMINI_KEY) {
+    const errors = [];
+    for (const attempt of SEARCH_ATTEMPTS) {
+      try {
+        const results = await geminiSearchOnce(attempt.model, attempt.toolKey, query);
+        return res.json({ query, results, via: 'gemini-grounding' });
+      } catch (err) {
+        errors.push(String(err && err.message ? err.message : err));
+      }
     }
+    // Le grounding a échoué (quota, modèle...) : on continue vers les fallbacks.
   }
 
-  res.status(502).json({ error: 'Recherche impossible : ' + lastError });
+  // Niveau 2 : DuckDuckGo (gratuit, sans quota)
+  try {
+    const results = await duckduckgoSearch(query);
+    return res.json({ query, results, via: 'duckduckgo' });
+  } catch (err) {
+    // on continue vers Wikipedia
+  }
+
+  // Niveau 3 : Wikipedia
+  try {
+    const results = await wikipediaSearch(query);
+    return res.json({ query, results, via: 'wikipedia' });
+  } catch (err) {
+    return res.status(502).json({ error: 'Recherche impossible par tous les moyens.' });
+  }
 });
 
 // Recherche de musique libre de droits (Creative Commons) via Jamendo, gratuit.
