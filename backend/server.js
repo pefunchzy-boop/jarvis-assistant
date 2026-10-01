@@ -49,8 +49,63 @@ app.post('/api/gemini', async (req, res) => {
 });
 
 // Recherche web via l'outil officiel "Grounding with Google Search" de Gemini.
-// Utilise la même clé GEMINI_API_KEY, pas de scraping (plus fiable que DuckDuckGo
-// depuis un serveur cloud, qui bloque souvent ces requêtes).
+// IMPORTANT : le grounding Google Search n'est PAS disponible sur tous les modèles.
+// Les variantes "lite" (comme gemini-3.5-flash-lite) le refusent souvent avec une erreur 400,
+// et le nommage de l'outil varie selon la version de l'API (google_search / googleSearch).
+// On essaie donc plusieurs combinaisons (modèle + nom d'outil) jusqu'à ce qu'une marche.
+const SEARCH_ATTEMPTS = [
+  { model: 'gemini-3.5-flash',      toolKey: 'google_search' },
+  { model: 'gemini-3.5-flash',      toolKey: 'googleSearch'  },
+  { model: 'gemini-3.5-flash-lite', toolKey: 'google_search' },
+  { model: 'gemini-3.5-flash-lite', toolKey: 'googleSearch'  },
+];
+
+async function geminiSearchOnce(model, toolKey, query) {
+  const tools = {};
+  tools[toolKey] = {};
+  const geminiResp = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          role: 'user',
+          parts: [{ text: `Recherche sur le web et résume de façon factuelle et concise (en français, 5 phrases maximum) : ${query}` }],
+        }],
+        tools: [tools],
+      }),
+    }
+  );
+
+  const data = await geminiResp.json();
+
+  if (!geminiResp.ok) {
+    const msg = (data && data.error && data.error.message) ? data.error.message : JSON.stringify(data).slice(0, 200);
+    throw new Error(`${model}/${toolKey} -> HTTP ${geminiResp.status} : ${msg}`);
+  }
+
+  const candidate = data.candidates && data.candidates[0];
+  const summary = candidate && candidate.content && candidate.content.parts
+    ? candidate.content.parts.map(p => p.text || '').join('').trim()
+    : '';
+  if (!summary) {
+    throw new Error(`${model}/${toolKey} -> réponse vide`);
+  }
+
+  // Sources fournies par le grounding
+  const chunks = (candidate && candidate.groundingMetadata && candidate.groundingMetadata.groundingChunks) || [];
+  const results = [];
+  results.push({ title: 'Synthèse de la recherche', url: '', snippet: summary });
+  chunks.slice(0, 5).forEach(c => {
+    if (c.web) {
+      results.push({ title: c.web.title || c.web.uri, url: c.web.uri, snippet: '' });
+    }
+  });
+
+  return results;
+}
+
 app.get('/api/search', async (req, res) => {
   const query = (req.query.q || '').toString().trim();
   if (!query) {
@@ -60,48 +115,18 @@ app.get('/api/search', async (req, res) => {
     return res.status(500).json({ error: 'GEMINI_API_KEY non configurée sur le serveur.' });
   }
 
-  try {
-    const geminiResp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [{ text: `Recherche sur le web et résume de façon factuelle et concise (en français, 5 phrases maximum) : ${query}` }],
-          }],
-          tools: [{ google_search: {} }],
-        }),
-      }
-    );
-
-    const data = await geminiResp.json();
-    if (!geminiResp.ok) {
-      return res.status(geminiResp.status).json({ error: data });
+  let lastError = null;
+  for (const attempt of SEARCH_ATTEMPTS) {
+    try {
+      const results = await geminiSearchOnce(attempt.model, attempt.toolKey, query);
+      return res.json({ query, results });
+    } catch (err) {
+      lastError = String(err && err.message ? err.message : err);
+      // On essaie la combinaison suivante.
     }
-
-    const candidate = data.candidates && data.candidates[0];
-    const summary = candidate && candidate.content && candidate.content.parts
-      ? candidate.content.parts.map(p => p.text || '').join('').trim()
-      : '';
-
-    // Sources fournies par le grounding
-    const chunks = (candidate && candidate.groundingMetadata && candidate.groundingMetadata.groundingChunks) || [];
-    const results = [];
-    if (summary) {
-      results.push({ title: 'Synthèse de la recherche', url: '', snippet: summary });
-    }
-    chunks.slice(0, 5).forEach(c => {
-      if (c.web) {
-        results.push({ title: c.web.title || c.web.uri, url: c.web.uri, snippet: '' });
-      }
-    });
-
-    res.json({ query, results });
-  } catch (err) {
-    res.status(500).json({ error: String(err) });
   }
+
+  res.status(502).json({ error: 'Recherche impossible : ' + lastError });
 });
 
 // Recherche de musique libre de droits (Creative Commons) via Jamendo, gratuit.
