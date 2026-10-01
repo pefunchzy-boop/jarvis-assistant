@@ -7,7 +7,9 @@ const cors = require('cors');
 
 const app = express();
 app.use(cors()); // ouvert à tous les domaines pour simplifier ; à restreindre si besoin (voir README)
-app.use(express.json({ limit: '2mb' }));
+// 10 Mo : avant on était à 2 Mo, ce qui provoquait une erreur 413 "Payload Too Large"
+// dès que l'historique de conversation ou un contenu encodé devenait trop gros.
+app.use(express.json({ limit: '10mb' }));
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID; // optionnel, pour la recherche de musique libre de droits
