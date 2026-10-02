@@ -77,11 +77,6 @@ async function geminiGenerate(contents, systemInstruction, generationConfig, too
   return data;
 }
 
-function candidateText(data) {
-  const c = data && data.candidates && data.candidates[0];
-  return (c && c.content && c.content.parts ? c.content.parts.map(p => p.text || '').join('') : '') || '';
-}
-
 function formatSearchResults(results) {
   const lines = results.map(r => {
     const head = r.title ? r.title : '';
@@ -128,8 +123,11 @@ app.post('/api/gemini', async (req, res) => {
           searchError = String(err && err.message ? err.message : err);
         }
 
-        // On ajoute le tour du modèle (functionCall) puis la réponse de l'outil
-        contents = contents.concat({ role: 'model', parts: [{ functionCall: fc }] });
+        // On ajoute le tour du modèle (functionCall) puis la réponse de l'outil.
+        // IMPORTANT : on renvoie la part ORIGINALE du modèle, telle quelle,
+        // pour conserver son thoughtSignature (sinon Gemini renvoie 400
+        // "Function call is missing a thought_signature in functionCall parts").
+        contents = contents.concat({ role: 'model', parts: [fcPart] });
         contents = contents.concat({
           role: 'user',
           parts: [
