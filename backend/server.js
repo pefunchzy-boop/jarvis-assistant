@@ -19,31 +19,173 @@ app.get('/', (req, res) => {
   res.send('Proxy Gemini en ligne.');
 });
 
+// ---- OUTIL search_web (function calling natif Gemini) ----
+// Déclaration de l'outil proposé au modèle à CHAQUE appel /api/gemini.
+// Comme ça, quand l'utilisateur demande une actu ou une info du jour, Gemini
+// appelle officiellement search_web au lieu d'inventer un pseudo-JSON
+// {"action":"search_web",...} que personne n'exécute (le bug du 02/10/2026).
+const SEARCH_TOOL = {
+  functionDeclarations: [
+    {
+      name: 'search_web',
+      description: "Rechercher sur le web des informations récentes (actualités du jour, faits d'actualité, événements récents). À utiliser dès que la question porte sur du récent ou de l'actu.",
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          query: { type: 'STRING', description: 'Requête de recherche courte, en français, sans code ni new Date().' },
+        },
+        required: ['query'],
+      },
+    },
+  ],
+};
+
+// Note ajoutée côté serveur au systemInstruction pour renforcer l'usage de l'outil
+// et interdire l'ancien comportement qui affichait du code brut à l'utilisateur.
+const TOOL_NOTE =
+  " [RÈGLE SERVEUR] Pour toute information d'actualité ou de recherche web, tu DOIS utiliser l'outil search_web (function calling). N'écris JAMAIS toi-même un texte du genre {\"action\":\"search_web\"...} dans ta réponse : ce n'est pas exécuté et l'utilisateur voit du code brut.";
+
+function withToolNote(systemInstruction) {
+  const note = TOOL_NOTE;
+  if (!systemInstruction) return { parts: [{ text: note.trim() }] };
+  if (typeof systemInstruction === 'string') return { parts: [{ text: systemInstruction + note }] };
+  if (systemInstruction.parts && systemInstruction.parts.length) {
+    return {
+      parts: systemInstruction.parts.map(p => (p.text ? { text: p.text.includes('[RÈGLE SERVEUR]') ? p.text : p.text + note } : p)),
+    };
+  }
+  return systemInstruction;
+}
+
+// ---- Génération Gemini avec boucle d'outils ----
+async function geminiGenerate(contents, systemInstruction, generationConfig, tools) {
+  const geminiResp = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents, systemInstruction, generationConfig, tools }),
+    }
+  );
+  const data = await geminiResp.json();
+  if (!geminiResp.ok) {
+    const err = new Error('Gemini HTTP ' + geminiResp.status);
+    err.status = geminiResp.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+function candidateText(data) {
+  const c = data && data.candidates && data.candidates[0];
+  return (c && c.content && c.content.parts ? c.content.parts.map(p => p.text || '').join('') : '') || '';
+}
+
+function formatSearchResults(results) {
+  const lines = results.map(r => {
+    const head = r.title ? r.title : '';
+    const url = r.url ? ' (' + r.url + ')' : '';
+    const snip = r.snippet ? ' — ' + r.snippet : '';
+    return '- ' + head + url + snip;
+  });
+  const txt = lines.join('\n');
+  return txt.length > 6000 ? txt.slice(0, 6000) + '\n...' : txt;
+}
+
 app.post('/api/gemini', async (req, res) => {
   if (!GEMINI_KEY) {
     return res.status(500).json({ error: 'GEMINI_API_KEY non configurée sur le serveur.' });
   }
 
   try {
-    const { contents, systemInstruction, generationConfig } = req.body;
+    let { contents, systemInstruction, generationConfig } = req.body;
+    contents = Array.isArray(contents) ? contents.slice() : [];
+    systemInstruction = withToolNote(systemInstruction);
 
-    const geminiResp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents, systemInstruction, generationConfig }),
+    const MAX_ROUNDS = 3; // au plus 3 allers-retours de recherche par réponse
+
+    for (let round = 0; round <= MAX_ROUNDS; round++) {
+      const data = await geminiGenerate(contents, systemInstruction, generationConfig, [SEARCH_TOOL]);
+
+      const cand = data.candidates && data.candidates[0];
+      const parts = (cand && cand.content && cand.content.parts) || [];
+
+      // Cas 1 : function calling officiel -> on exécute la recherche côté serveur
+      const fcPart = parts.find(p => p.functionCall && (p.functionCall.name === 'search_web' || p.functionCall.name === 'search'));
+      if (fcPart) {
+        const fc = fcPart.functionCall;
+        const args = fc.args || {};
+        const query = (args.query || args.q || '').toString().trim();
+        if (!query) return res.json(data); // rien à chercher, on renvoie tel quel
+
+        let results = [];
+        let searchError = null;
+        try {
+          const r = await performWebSearch(query);
+          results = r.results;
+        } catch (err) {
+          searchError = String(err && err.message ? err.message : err);
+        }
+
+        // On ajoute le tour du modèle (functionCall) puis la réponse de l'outil
+        contents = contents.concat({ role: 'model', parts: [{ functionCall: fc }] });
+        contents = contents.concat({
+          role: 'user',
+          parts: [
+            {
+              functionResponse: {
+                name: fc.name,
+                response: searchError
+                  ? { error: 'Recherche impossible : ' + searchError.slice(0, 200) + '. Réponds avec ce que tu sais, sans inventer de code.' }
+                  : { results: results.slice(0, 8) },
+              },
+            },
+          ],
+        });
+        continue; // on redemande à Gemini avec les résultats
       }
-    );
 
-    const data = await geminiResp.json();
+      // Cas 2 (filet de sécurité) : le modèle a quand même écrit un pseudo-JSON
+      // {"action":"search_web", "query": "..."} dans sa réponse texte.
+      const text = parts.map(p => p.text || '').join('');
+      if (text.indexOf('"action"') !== -1 && /search_web|search/.test(text)) {
+        const m = text.match(/"query"\s*:\s*"([^"]+)"/) || text.match(/"q"\s*:\s*"([^"]+)"/);
+        if (m) {
+          const query = m[1].trim();
+          let resultsText = '';
+          try {
+            const r = await performWebSearch(query);
+            resultsText = formatSearchResults(r.results);
+          } catch (err) {
+            resultsText = 'Recherche impossible (' + String(err && err.message ? err.message : err).slice(0, 200) + ').';
+          }
+          contents = contents.concat({ role: 'model', parts: [{ text }] });
+          contents = contents.concat({
+            role: 'user',
+            parts: [
+              {
+                text:
+                  '[RÉSULTATS DE RECHERCHE WEB pour "' + query + '"]\n' + resultsText +
+                  '\n\nUtilise ces résultats pour répondre à la question de l\'utilisateur. Respecte le format de réponse JSON attendu par l\'appli. N\'écris plus jamais de {"action":...} : pour chercher, utilise l\'outil search_web.',
+              },
+            ],
+          });
+          continue; // Gemini reformule une vraie réponse
+        }
+      }
 
-    if (!geminiResp.ok) {
-      return res.status(geminiResp.status).json({ error: data });
+      // Réponse finale propre : on la renvoie telle quelle au client (format inchangé).
+      return res.json(data);
     }
 
-    res.json(data);
+    // Nombre max de tours atteint : une dernière génération SANS outil pour forcer une réponse finale.
+    const data = await geminiGenerate(contents, systemInstruction, generationConfig, undefined);
+    return res.json(data);
   } catch (err) {
+    if (err && err.status && err.data) {
+      return res.status(err.status).json({ error: err.data });
+    }
     res.status(500).json({ error: String(err) });
   }
 });
@@ -202,12 +344,8 @@ async function wikipediaSearch(query) {
   return results;
 }
 
-app.get('/api/search', async (req, res) => {
-  const query = (req.query.q || '').toString().trim();
-  if (!query) {
-    return res.status(400).json({ error: 'Paramètre q manquant.' });
-  }
-
+// Cascade partagée : utilisée par /api/search ET par l'outil search_web du function calling.
+async function performWebSearch(query) {
   const errors = [];
 
   // Niveau 1 : grounding Gemini (si la clé existe et le quota n'est pas épuisé)
@@ -215,7 +353,7 @@ app.get('/api/search', async (req, res) => {
     for (const attempt of SEARCH_ATTEMPTS) {
       try {
         const results = await geminiSearchOnce(attempt.model, attempt.toolKey, query);
-        return res.json({ query, results, via: 'gemini-grounding' });
+        return { query, results, via: 'gemini-grounding' };
       } catch (err) {
         errors.push(String(err && err.message ? err.message : err));
       }
@@ -226,7 +364,7 @@ app.get('/api/search', async (req, res) => {
   // Niveau 2 : Google News RSS (actu récente, gratuit, sans quota)
   try {
     const results = await googleNewsSearch(query);
-    return res.json({ query, results, via: 'google-news' });
+    return { query, results, via: 'google-news' };
   } catch (err) {
     errors.push(String(err && err.message ? err.message : err));
   }
@@ -234,7 +372,7 @@ app.get('/api/search', async (req, res) => {
   // Niveau 3 : DuckDuckGo (faits généraux)
   try {
     const results = await duckduckgoSearch(query);
-    return res.json({ query, results, via: 'duckduckgo' });
+    return { query, results, via: 'duckduckgo' };
   } catch (err) {
     errors.push(String(err && err.message ? err.message : err));
   }
@@ -242,12 +380,26 @@ app.get('/api/search', async (req, res) => {
   // Niveau 4 : Wikipedia
   try {
     const results = await wikipediaSearch(query);
-    return res.json({ query, results, via: 'wikipedia' });
+    return { query, results, via: 'wikipedia' };
   } catch (err) {
     errors.push(String(err && err.message ? err.message : err));
   }
 
-  res.status(502).json({ error: 'Recherche impossible par tous les moyens. Détails : ' + errors.join(' | ').slice(0, 500) });
+  throw new Error('Recherche impossible par tous les moyens. Détails : ' + errors.join(' | ').slice(0, 500));
+}
+
+app.get('/api/search', async (req, res) => {
+  const query = (req.query.q || '').toString().trim();
+  if (!query) {
+    return res.status(400).json({ error: 'Paramètre q manquant.' });
+  }
+
+  try {
+    const r = await performWebSearch(query);
+    return res.json(r);
+  } catch (err) {
+    return res.status(502).json({ error: String(err && err.message ? err.message : err) });
+  }
 });
 
 // Recherche de musique libre de droits (Creative Commons) via Jamendo, gratuit.
