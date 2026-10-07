@@ -16,6 +16,7 @@ const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID; // optionnel, pour la r
 const BREVO_API_KEY = process.env.BREVO_API_KEY; // pour l'envoi réel d'e-mails (Brevo, 300/jour gratuit)
 const JARVIS_SENDER_EMAIL = process.env.JARVIS_SENDER_EMAIL; // adresse expéditrice validée dans Brevo
 const USER_EMAIL = process.env.USER_EMAIL; // adresse du destinataire (toi)
+const MORNING_MAIL_TOKEN = process.env.MORNING_MAIL_TOKEN; // token secret pour déclencher le mail matinal
 const MODEL = 'gemini-3.5-flash-lite';
 
 app.get('/', (req, res) => {
@@ -37,8 +38,7 @@ const SEARCH_TOOL = {
         properties: {
           query: { type: 'STRING', description: 'Requête de recherche courte, en français, sans code ni new Date().' },
         },
- 
-       required: ['query'],
+        required: ['query'],
       },
     },
   ],
@@ -77,8 +77,7 @@ function withToolNote(systemInstruction) {
   if (typeof systemInstruction === 'string') return { parts: [{ text: systemInstruction + note }] };
   if (systemInstruction.parts && systemInstruction.parts.length) {
     return {
-      parts: systemInstruction.parts.map(p => (p.text ? { text: p.text.incl
-udes('[RÈGLE SERVEUR]') ? p.text : p.text + note } : p)),
+      parts: systemInstruction.parts.map(p => (p.text ? { text: p.text.includes('[RÈGLE SERVEUR]') ? p.text : p.text + note } : p)),
     };
   }
   return systemInstruction;
@@ -87,7 +86,7 @@ udes('[RÈGLE SERVEUR]') ? p.text : p.text + note } : p)),
 // ---- Génération Gemini avec boucle d'outils ----
 async function geminiGenerate(contents, systemInstruction, generationConfig, tools) {
   const geminiResp = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`,
+    'https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent?key=' + GEMINI_KEY,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -132,8 +131,7 @@ async function sendEmail(subject, bodyText) {
     body: JSON.stringify({
       sender: { name: 'Jarvis', email: JARVIS_SENDER_EMAIL },
       to: [{ email: USER_EMAIL }],
-      subject: String(subject
- || 'Message de Jarvis').slice(0, 200),
+      subject: String(subject || 'Message de Jarvis').slice(0, 200),
       textContent: String(bodyText || '').slice(0, 20000),
     }),
   });
@@ -184,8 +182,7 @@ app.post('/api/gemini', async (req, res) => {
         const args = fc.args || {};
 
         // On ajoute le tour du modèle (functionCall) puis la réponse de l'outil.
-        // IMPORTANT : on renvoie la part ORIGINALE du modèle, telle qu
-elle,
+        // IMPORTANT : on renvoie la part ORIGINALE du modèle, telle quelle,
         // pour conserver son thoughtSignature (sinon Gemini renvoie 400
         // "Function call is missing a thought_signature in functionCall parts").
         contents = contents.concat({ role: 'model', parts: [fcPart] });
@@ -200,7 +197,7 @@ elle,
             emailResponse = { sent: true, to: USER_EMAIL };
           } catch (err) {
             emailResponse = {
-              error: 'Envoi impossible : ' + String(err && err.message ? err.message : err).slice(0, 200) + '. Dis-le clairement à l’utilisateur, sans inventer de code.',
+              error: 'Envoi impossible : ' + String(err && err.message ? err.message : err).slice(0, 200) + ". Dis-le clairement à l'utilisateur, sans inventer de code.",
             };
           }
           contents = contents.concat({
@@ -232,8 +229,7 @@ elle,
                 response: searchError
                   ? { error: 'Recherche impossible : ' + searchError.slice(0, 200) + '. Réponds avec ce que tu sais, sans inventer de code.' }
                   : { results: results.slice(0, 8) },
-              }
-,
+              },
             },
           ],
         });
@@ -261,7 +257,7 @@ elle,
               {
                 text:
                   '[RÉSULTATS DE RECHERCHE WEB pour "' + query + '"]\n' + resultsText +
-                  '\n\nUtilise ces résultats pour répondre à la question de l\'utilisateur. Respecte le format de réponse JSON attendu par l\'appli. N\'écris plus jamais de {"action":...} : pour chercher, utilise l\'outil search_web.',
+                  "\n\nUtilise ces résultats pour répondre à la question de l'utilisateur. Respecte le format de réponse JSON attendu par l'appli. N'écris plus jamais de {\"action\":...} : pour chercher, utilise l'outil search_web.",
               },
             ],
           });
@@ -280,8 +276,60 @@ elle,
     if (err && err.status && err.data) {
       return res.status(err.status).json({ error: err.data });
     }
-  
-  res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- MAIL MATIN AUTOMATIQUE (cron externe) ----
+// Render gratuit endort le serveur après 15 min d'inactivité : un cron interne
+// ne partirait jamais de façon fiable. À la place, un service externe gratuit
+// (cron-job.org, ou ton pinger existant) appelle cette route chaque matin,
+// ce qui réveille le serveur au passage.
+// Le token secret (variable MORNING_MAIL_TOKEN) évite que n'importe qui déclenche l'envoi.
+app.get('/api/cron/morning-mail', async (req, res) => {
+  const token = (req.query.token || '').toString();
+  if (!MORNING_MAIL_TOKEN || token !== MORNING_MAIL_TOKEN) {
+    return res.status(403).json({ error: 'Token invalide ou manquant.' });
+  }
+  if (!GEMINI_KEY || !BREVO_API_KEY) {
+    return res.status(500).json({ error: 'Configuration serveur incomplète (GEMINI_API_KEY / BREVO_API_KEY).' });
+  }
+
+  try {
+    // 1) On cherche les actus avec la cascade existante (grounding Gemini puis fallbacks).
+    const r = await performWebSearch("actualités Wolfisheim aujourd'hui");
+    const sourcesText = formatSearchResults(r.results);
+
+    // 2) Gemini rédige un mail clair à partir des résultats (pas de JSON, du texte).
+    const geminiResp = await fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/' + MODEL + ':generateContent?key=' + GEMINI_KEY,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [{
+              text:
+                "Voici des résultats de recherche sur les actualités de Wolfisheim (Bas-Rhin) aujourd'hui :\n" + sourcesText +
+                "\n\nRédige un e-mail matinal pour l'utilisateur : 4 à 6 phrases, en français, ton sympa et direct signé Jarvis. Résume les infos principales (s'il n'y a rien de très récent sur Wolfisheim, dis-le et propose les infos locales les plus pertinentes). Réponds UNIQUEMENT par le texte de l'e-mail, sans objet, sans JSON, sans code.",
+            }],
+          }],
+        }),
+      }
+    );
+    const data = await geminiResp.json();
+    const bodyText =
+      (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts
+        ? data.candidates[0].content.parts.map(p => p.text || '').join('').trim()
+        : '') || sourcesText; // filet : si Gemini échoue, on envoie les résultats bruts
+
+    // 3) Envoi réel du mail.
+    const dateStr = new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+    await sendEmail('Bonjour, ton actus de Wolfisheim (' + dateStr + ')', bodyText + '\n\n— Jarvis');
+    return res.json({ sent: true, to: USER_EMAIL, via: r.via });
+  } catch (err) {
+    return res.status(500).json({ error: String(err && err.message ? err.message : err) });
   }
 });
 
@@ -308,14 +356,14 @@ async function geminiSearchOnce(model, toolKey, query) {
   const tools = {};
   tools[toolKey] = {};
   const geminiResp = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`,
+    'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent?key=' + GEMINI_KEY,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         contents: [{
           role: 'user',
-          parts: [{ text: `Recherche sur le web et résume de façon factuelle et concise (en français, 5 phrases maximum) : ${query}` }],
+          parts: [{ text: 'Recherche sur le web et résume de façon factuelle et concise (en français, 5 phrases maximum) : ' + query }],
         }],
         tools: [tools],
       }),
@@ -326,16 +374,15 @@ async function geminiSearchOnce(model, toolKey, query) {
 
   if (!geminiResp.ok) {
     const msg = (data && data.error && data.error.message) ? data.error.message : JSON.stringify(data).slice(0, 200);
-    throw new Error(`${model}/${toolKey} -> HTTP ${geminiResp.status} : ${msg}`);
+    throw new Error(model + '/' + toolKey + ' -> HTTP ' + geminiResp.status + ' : ' + msg);
   }
 
   const candidate = data.candidates && data.candidates[0];
-  const
- summary = candidate && candidate.content && candidate.content.parts
+  const summary = candidate && candidate.content && candidate.content.parts
     ? candidate.content.parts.map(p => p.text || '').join('').trim()
     : '';
   if (!summary) {
-    throw new Error(`${model}/${toolKey} -> réponse vide`);
+    throw new Error(model + '/' + toolKey + ' -> réponse vide');
   }
 
   const chunks = (candidate && candidate.groundingMetadata && candidate.groundingMetadata.groundingChunks) || [];
@@ -380,8 +427,7 @@ async function googleNewsSearch(query) {
     const source = (block.match(/<source[^>]*>([\s\S]*?)<\/source>/) || [])[1];
     if (title) {
       let t = decodeXmlEntities(title).trim();
-      // Go
-ogle News colle le nom du média à la fin du titre : "Titre - Le Monde"
+      // Google News colle le nom du média à la fin du titre : "Titre - Le Monde"
       const src = source ? decodeXmlEntities(source).trim() : '';
       if (src && t.endsWith(' - ' + src)) t = t.slice(0, -(' - ' + src).length);
       items.push({
@@ -424,8 +470,7 @@ async function wikipediaSearch(query) {
 
   const results = [];
   for (const h of hits.slice(0, 3)) {
-    const sumUrl = 'https://fr.wikipedia.org/api/rest_v1/page
-/summary/' + encodeURIComponent(h.title.replace(/ /g, '_'));
+    const sumUrl = 'https://fr.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(h.title.replace(/ /g, '_'));
     const sumResp = await fetch(sumUrl, { headers: { 'User-Agent': 'jarvis-assistant/1.0' } });
     if (sumResp.ok) {
       const s = await sumResp.json();
@@ -478,8 +523,7 @@ async function performWebSearch(query) {
   // Niveau 4 : Wikipedia
   try {
     const results = await wikipediaSearch(query);
-    retur
-n { query, results, via: 'wikipedia' };
+    return { query, results, via: 'wikipedia' };
   } catch (err) {
     errors.push(String(err && err.message ? err.message : err));
   }
@@ -514,7 +558,7 @@ app.get('/api/music', async (req, res) => {
   }
 
   try {
-    const url = `https://api.jamendo.com/v3.0/tracks/?client_id=${encodeURIComponent(JAMENDO_CLIENT_ID)}&format=json&limit=6&search=${encodeURIComponent(query)}&include=musicinfo`;
+    const url = 'https://api.jamendo.com/v3.0/tracks/?client_id=' + encodeURIComponent(JAMENDO_CLIENT_ID) + '&format=json&limit=6&search=' + encodeURIComponent(query) + '&include=musicinfo';
     const jResp = await fetch(url);
     const data = await jResp.json();
 
@@ -533,63 +577,7 @@ app.get('/api/music', async (req, res) => {
   }
 });
 
-// ---- MAIL MATIN AUTOMATIQUE (cron externe) ----
-// Render gratuit endort le serveur après 15 min d'inactivité : un cron interne
-// ne partirait jamais de façon fiable. À la place, un service externe gratuit
-// (cron-job.org) appelle cette route chaque matin, ce qui réveille le serveur.
-// Le token secret (variable MORNING_MAIL_TOKEN) évite que n'importe qui déclenche l'envoi.
-const MORNING_MAIL_TOKEN = process.env.MORNING_MAIL_TOKEN;
-
-app.get('/api/cron/morning-mail', async (req, res) => {
-  const token = (req.query.token || '').toString();
-  if (!MORNING_MAIL_TOKEN || token !== MORNING_MAIL_TOKEN) {
-    return res.status(403).json({ error: 'Token invalide ou manquant.' });
-  }
-  if (!GEMINI_KEY || !BREVO_API_KEY) {
-    return res.status(500).json({ error: 'Configuration serveur incomplète (GEMINI_API_KEY / BREVO_API_KEY).' });
-  }
-
-  try {
-    // 1) On cherche les actus avec la cascade existante (grounding Gemini puis fallbacks).
-    const r = await performWebSearch("actualités Wolfisheim aujourd'hui");
-    const sourcesText = formatSearchResults(r.results);
-
-    // 2) Gemini rédige un mail clair à partir des résultats (pas de JSON, du texte).
-    const geminiResp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [{
-              text:
-                "Voici des résultats de recherche sur les actualités de Wolfisheim (Bas-Rhin) aujourd'hui :\n" + sourcesText +
-                "\n\nRédige un e-mail matinal pour l'utilisateur : 4 à 6 phrases, en français, ton sympa et direct signé Jarvis. " +
-                "Résume les infos principales (s'il n'y a rien de très récent sur Wolfisheim, dis-le et propose les infos locales les plus pertinentes). " +
-                "Réponds UNIQUEMENT par le texte de l'e-mail, sans objet, sans JSON, sans code.",
-            }],
-          }],
-        }),
-      }
-    );
-    const data = await geminiResp.json();
-    const body =
-      (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts
-        ? data.candidates[0].content.parts.map(p => p.text || '').join('').trim()
-        : '') || sourcesText; // filet : si Gemini échoue, on envoie les résultats bruts
-
-    // 3) Envoi réel du mail.
-    const dateStr = new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
-    await sendEmail('Bonjour, ton actus de Wolfisheim (' + dateStr + ')', body + '\n\n— Jarvis');
-    return res.json({ sent: true, to: USER_EMAIL, via: r.via });
-  } catch (err) {
-    return res.status(500).json({ error: String(err && err.message ? err.message : err) });
-  }
-});
-
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Proxy Gemini démarré sur le port ${PORT}`);
+  console.log('Proxy Gemini démarré sur le port ' + PORT);
 });
