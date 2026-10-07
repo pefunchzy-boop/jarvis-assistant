@@ -37,7 +37,8 @@ const SEARCH_TOOL = {
         properties: {
           query: { type: 'STRING', description: 'Requête de recherche courte, en français, sans code ni new Date().' },
         },
-        required: ['query'],
+ 
+       required: ['query'],
       },
     },
   ],
@@ -76,7 +77,8 @@ function withToolNote(systemInstruction) {
   if (typeof systemInstruction === 'string') return { parts: [{ text: systemInstruction + note }] };
   if (systemInstruction.parts && systemInstruction.parts.length) {
     return {
-      parts: systemInstruction.parts.map(p => (p.text ? { text: p.text.includes('[RÈGLE SERVEUR]') ? p.text : p.text + note } : p)),
+      parts: systemInstruction.parts.map(p => (p.text ? { text: p.text.incl
+udes('[RÈGLE SERVEUR]') ? p.text : p.text + note } : p)),
     };
   }
   return systemInstruction;
@@ -130,7 +132,8 @@ async function sendEmail(subject, bodyText) {
     body: JSON.stringify({
       sender: { name: 'Jarvis', email: JARVIS_SENDER_EMAIL },
       to: [{ email: USER_EMAIL }],
-      subject: String(subject || 'Message de Jarvis').slice(0, 200),
+      subject: String(subject
+ || 'Message de Jarvis').slice(0, 200),
       textContent: String(bodyText || '').slice(0, 20000),
     }),
   });
@@ -181,7 +184,8 @@ app.post('/api/gemini', async (req, res) => {
         const args = fc.args || {};
 
         // On ajoute le tour du modèle (functionCall) puis la réponse de l'outil.
-        // IMPORTANT : on renvoie la part ORIGINALE du modèle, telle quelle,
+        // IMPORTANT : on renvoie la part ORIGINALE du modèle, telle qu
+elle,
         // pour conserver son thoughtSignature (sinon Gemini renvoie 400
         // "Function call is missing a thought_signature in functionCall parts").
         contents = contents.concat({ role: 'model', parts: [fcPart] });
@@ -228,7 +232,8 @@ app.post('/api/gemini', async (req, res) => {
                 response: searchError
                   ? { error: 'Recherche impossible : ' + searchError.slice(0, 200) + '. Réponds avec ce que tu sais, sans inventer de code.' }
                   : { results: results.slice(0, 8) },
-              },
+              }
+,
             },
           ],
         });
@@ -275,7 +280,8 @@ app.post('/api/gemini', async (req, res) => {
     if (err && err.status && err.data) {
       return res.status(err.status).json({ error: err.data });
     }
-    res.status(500).json({ error: String(err) });
+  
+  res.status(500).json({ error: String(err) });
   }
 });
 
@@ -324,7 +330,8 @@ async function geminiSearchOnce(model, toolKey, query) {
   }
 
   const candidate = data.candidates && data.candidates[0];
-  const summary = candidate && candidate.content && candidate.content.parts
+  const
+ summary = candidate && candidate.content && candidate.content.parts
     ? candidate.content.parts.map(p => p.text || '').join('').trim()
     : '';
   if (!summary) {
@@ -373,7 +380,8 @@ async function googleNewsSearch(query) {
     const source = (block.match(/<source[^>]*>([\s\S]*?)<\/source>/) || [])[1];
     if (title) {
       let t = decodeXmlEntities(title).trim();
-      // Google News colle le nom du média à la fin du titre : "Titre - Le Monde"
+      // Go
+ogle News colle le nom du média à la fin du titre : "Titre - Le Monde"
       const src = source ? decodeXmlEntities(source).trim() : '';
       if (src && t.endsWith(' - ' + src)) t = t.slice(0, -(' - ' + src).length);
       items.push({
@@ -416,7 +424,8 @@ async function wikipediaSearch(query) {
 
   const results = [];
   for (const h of hits.slice(0, 3)) {
-    const sumUrl = 'https://fr.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(h.title.replace(/ /g, '_'));
+    const sumUrl = 'https://fr.wikipedia.org/api/rest_v1/page
+/summary/' + encodeURIComponent(h.title.replace(/ /g, '_'));
     const sumResp = await fetch(sumUrl, { headers: { 'User-Agent': 'jarvis-assistant/1.0' } });
     if (sumResp.ok) {
       const s = await sumResp.json();
@@ -469,7 +478,8 @@ async function performWebSearch(query) {
   // Niveau 4 : Wikipedia
   try {
     const results = await wikipediaSearch(query);
-    return { query, results, via: 'wikipedia' };
+    retur
+n { query, results, via: 'wikipedia' };
   } catch (err) {
     errors.push(String(err && err.message ? err.message : err));
   }
@@ -520,6 +530,62 @@ app.get('/api/music', async (req, res) => {
     res.json({ query, tracks });
   } catch (err) {
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// ---- MAIL MATIN AUTOMATIQUE (cron externe) ----
+// Render gratuit endort le serveur après 15 min d'inactivité : un cron interne
+// ne partirait jamais de façon fiable. À la place, un service externe gratuit
+// (cron-job.org) appelle cette route chaque matin, ce qui réveille le serveur.
+// Le token secret (variable MORNING_MAIL_TOKEN) évite que n'importe qui déclenche l'envoi.
+const MORNING_MAIL_TOKEN = process.env.MORNING_MAIL_TOKEN;
+
+app.get('/api/cron/morning-mail', async (req, res) => {
+  const token = (req.query.token || '').toString();
+  if (!MORNING_MAIL_TOKEN || token !== MORNING_MAIL_TOKEN) {
+    return res.status(403).json({ error: 'Token invalide ou manquant.' });
+  }
+  if (!GEMINI_KEY || !BREVO_API_KEY) {
+    return res.status(500).json({ error: 'Configuration serveur incomplète (GEMINI_API_KEY / BREVO_API_KEY).' });
+  }
+
+  try {
+    // 1) On cherche les actus avec la cascade existante (grounding Gemini puis fallbacks).
+    const r = await performWebSearch("actualités Wolfisheim aujourd'hui");
+    const sourcesText = formatSearchResults(r.results);
+
+    // 2) Gemini rédige un mail clair à partir des résultats (pas de JSON, du texte).
+    const geminiResp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${GEMINI_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [{
+              text:
+                "Voici des résultats de recherche sur les actualités de Wolfisheim (Bas-Rhin) aujourd'hui :\n" + sourcesText +
+                "\n\nRédige un e-mail matinal pour l'utilisateur : 4 à 6 phrases, en français, ton sympa et direct signé Jarvis. " +
+                "Résume les infos principales (s'il n'y a rien de très récent sur Wolfisheim, dis-le et propose les infos locales les plus pertinentes). " +
+                "Réponds UNIQUEMENT par le texte de l'e-mail, sans objet, sans JSON, sans code.",
+            }],
+          }],
+        }),
+      }
+    );
+    const data = await geminiResp.json();
+    const body =
+      (data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts
+        ? data.candidates[0].content.parts.map(p => p.text || '').join('').trim()
+        : '') || sourcesText; // filet : si Gemini échoue, on envoie les résultats bruts
+
+    // 3) Envoi réel du mail.
+    const dateStr = new Date().toLocaleDateString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long' });
+    await sendEmail('Bonjour, ton actus de Wolfisheim (' + dateStr + ')', body + '\n\n— Jarvis');
+    return res.json({ sent: true, to: USER_EMAIL, via: r.via });
+  } catch (err) {
+    return res.status(500).json({ error: String(err && err.message ? err.message : err) });
   }
 });
 
