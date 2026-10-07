@@ -13,16 +13,19 @@ app.use(express.json({ limit: '10mb' }));
 
 const GEMINI_KEY = process.env.GEMINI_API_KEY;
 const JAMENDO_CLIENT_ID = process.env.JAMENDO_CLIENT_ID; // optionnel, pour la recherche de musique libre de droits
+const BREVO_API_KEY = process.env.BREVO_API_KEY; // pour l'envoi réel d'e-mails (Brevo, 300/jour gratuit)
+const JARVIS_SENDER_EMAIL = process.env.JARVIS_SENDER_EMAIL; // adresse expéditrice validée dans Brevo
+const USER_EMAIL = process.env.USER_EMAIL; // adresse du destinataire (toi)
 const MODEL = 'gemini-3.5-flash-lite';
 
 app.get('/', (req, res) => {
   res.send('Proxy Gemini en ligne.');
 });
 
-// ---- OUTIL search_web (function calling natif Gemini) ----
-// Déclaration de l'outil proposé au modèle à CHAQUE appel /api/gemini.
-// Comme ça, quand l'utilisateur demande une actu ou une info du jour, Gemini
-// appelle officiellement search_web au lieu d'inventer un pseudo-JSON
+// ---- OUTILS (function calling natif Gemini) ----
+// Déclaration des outils proposés au modèle à CHAQUE appel /api/gemini.
+// Comme ça, quand l'utilisateur demande une actu ou l'envoi d'un mail, Gemini
+// appelle officiellement l'outil au lieu d'inventer un pseudo-JSON
 // {"action":"search_web",...} que personne n'exécute (le bug du 02/10/2026).
 const SEARCH_TOOL = {
   functionDeclarations: [
@@ -40,10 +43,32 @@ const SEARCH_TOOL = {
   ],
 };
 
-// Note ajoutée côté serveur au systemInstruction pour renforcer l'usage de l'outil
+// Envoi RÉEL d'un e-mail (pas un brouillon) via l'API Brevo.
+// Le destinataire est fixé côté serveur (USER_EMAIL) pour que le modèle ne
+// puisse pas envoyer de mail à n'importe qui.
+const EMAIL_TOOL = {
+  functionDeclarations: [
+    {
+      name: 'send_email',
+      description: "Envoyer un vrai e-mail à l'utilisateur (il part réellement, ce n'est pas un brouillon). À utiliser dès que l'utilisateur demande de lui envoyer un e-mail / un mail.",
+      parameters: {
+        type: 'OBJECT',
+        properties: {
+          subject: { type: 'STRING', description: "Objet court et clair de l'e-mail." },
+          body: { type: 'STRING', description: "Corps de l'e-mail en texte clair, rédigé et prêt à lire. Jamais de JSON ni de code." },
+        },
+        required: ['subject', 'body'],
+      },
+    },
+  ],
+};
+
+const TOOLS = [SEARCH_TOOL, EMAIL_TOOL];
+
+// Note ajoutée côté serveur au systemInstruction pour renforcer l'usage des outils
 // et interdire l'ancien comportement qui affichait du code brut à l'utilisateur.
 const TOOL_NOTE =
-  " [RÈGLE SERVEUR] Pour toute information d'actualité ou de recherche web, tu DOIS utiliser l'outil search_web (function calling). N'écris JAMAIS toi-même un texte du genre {\"action\":\"search_web\"...} dans ta réponse : ce n'est pas exécuté et l'utilisateur voit du code brut.";
+  " [RÈGLE SERVEUR] Pour toute information d'actualité ou de recherche web, tu DOIS utiliser l'outil search_web (function calling). Pour tout envoi d'e-mail demandé par l'utilisateur, tu DOIS utiliser l'outil send_email : l'e-mail est envoyé réellement, ne crée jamais un « brouillon » ni un texte à copier, appelle l'outil. N'écris JAMAIS toi-même un texte du genre {\"action\":\"search_web\"...} ou {\"action\":\"send_email\"...} dans ta réponse : ce n'est pas exécuté et l'utilisateur voit du code brut.";
 
 function withToolNote(systemInstruction) {
   const note = TOOL_NOTE;
@@ -88,6 +113,47 @@ function formatSearchResults(results) {
   return txt.length > 6000 ? txt.slice(0, 6000) + '\n...' : txt;
 }
 
+// ---- ENVOI D'E-MAIL (Brevo) ----
+// Envoi réel via l'API HTTPS de Brevo : aucune dépendance npm en plus (fetch natif).
+// Le destinataire est TOUJOURS USER_EMAIL, l'outil ne peut écrire à personne d'autre.
+async function sendEmail(subject, bodyText) {
+  if (!BREVO_API_KEY) throw new Error('BREVO_API_KEY non configurée sur le serveur.');
+  if (!USER_EMAIL) throw new Error('USER_EMAIL non configurée sur le serveur.');
+  if (!JARVIS_SENDER_EMAIL) throw new Error('JARVIS_SENDER_EMAIL non configurée sur le serveur.');
+
+  const resp = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'api-key': BREVO_API_KEY,
+    },
+    body: JSON.stringify({
+      sender: { name: 'Jarvis', email: JARVIS_SENDER_EMAIL },
+      to: [{ email: USER_EMAIL }],
+      subject: String(subject || 'Message de Jarvis').slice(0, 200),
+      textContent: String(bodyText || '').slice(0, 20000),
+    }),
+  });
+
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    const msg = (data && data.message) ? data.message : JSON.stringify(data).slice(0, 200);
+    throw new Error('Brevo -> HTTP ' + resp.status + ' : ' + msg);
+  }
+  return data;
+}
+
+// Route manuelle pour tester l'envoi (ou l'appeler depuis une autre app).
+app.post('/api/email', async (req, res) => {
+  const { subject, body } = req.body || {};
+  try {
+    await sendEmail(subject || 'Message de Jarvis', body || '');
+    res.json({ sent: true, to: USER_EMAIL });
+  } catch (err) {
+    res.status(500).json({ error: String(err && err.message ? err.message : err) });
+  }
+});
+
 app.post('/api/gemini', async (req, res) => {
   if (!GEMINI_KEY) {
     return res.status(500).json({ error: 'GEMINI_API_KEY non configurée sur le serveur.' });
@@ -98,19 +164,49 @@ app.post('/api/gemini', async (req, res) => {
     contents = Array.isArray(contents) ? contents.slice() : [];
     systemInstruction = withToolNote(systemInstruction);
 
-    const MAX_ROUNDS = 3; // au plus 3 allers-retours de recherche par réponse
+    const MAX_ROUNDS = 3; // au plus 3 allers-retours d'outils par réponse
 
     for (let round = 0; round <= MAX_ROUNDS; round++) {
-      const data = await geminiGenerate(contents, systemInstruction, generationConfig, [SEARCH_TOOL]);
+      const data = await geminiGenerate(contents, systemInstruction, generationConfig, TOOLS);
 
       const cand = data.candidates && data.candidates[0];
       const parts = (cand && cand.content && cand.content.parts) || [];
 
-      // Cas 1 : function calling officiel -> on exécute la recherche côté serveur
-      const fcPart = parts.find(p => p.functionCall && (p.functionCall.name === 'search_web' || p.functionCall.name === 'search'));
+      // Cas 1 : function calling officiel -> on exécute l'outil côté serveur
+      const fcPart = parts.find(
+        p => p.functionCall && (p.functionCall.name === 'search_web' || p.functionCall.name === 'search' || p.functionCall.name === 'send_email')
+      );
       if (fcPart) {
         const fc = fcPart.functionCall;
         const args = fc.args || {};
+
+        // On ajoute le tour du modèle (functionCall) puis la réponse de l'outil.
+        // IMPORTANT : on renvoie la part ORIGINALE du modèle, telle quelle,
+        // pour conserver son thoughtSignature (sinon Gemini renvoie 400
+        // "Function call is missing a thought_signature in functionCall parts").
+        contents = contents.concat({ role: 'model', parts: [fcPart] });
+
+        // Outil send_email : envoi réel puis on informe le modèle du résultat.
+        if (fc.name === 'send_email') {
+          const subject = (args.subject || 'Message de Jarvis').toString();
+          const body = (args.body || '').toString();
+          let emailResponse;
+          try {
+            await sendEmail(subject, body);
+            emailResponse = { sent: true, to: USER_EMAIL };
+          } catch (err) {
+            emailResponse = {
+              error: 'Envoi impossible : ' + String(err && err.message ? err.message : err).slice(0, 200) + '. Dis-le clairement à l’utilisateur, sans inventer de code.',
+            };
+          }
+          contents = contents.concat({
+            role: 'user',
+            parts: [{ functionResponse: { name: fc.name, response: emailResponse } }],
+          });
+          continue; // Gemini rédige la confirmation finale
+        }
+
+        // Outil search_web : recherche comme avant.
         const query = (args.query || args.q || '').toString().trim();
         if (!query) return res.json(data); // rien à chercher, on renvoie tel quel
 
@@ -123,11 +219,6 @@ app.post('/api/gemini', async (req, res) => {
           searchError = String(err && err.message ? err.message : err);
         }
 
-        // On ajoute le tour du modèle (functionCall) puis la réponse de l'outil.
-        // IMPORTANT : on renvoie la part ORIGINALE du modèle, telle quelle,
-        // pour conserver son thoughtSignature (sinon Gemini renvoie 400
-        // "Function call is missing a thought_signature in functionCall parts").
-        contents = contents.concat({ role: 'model', parts: [fcPart] });
         contents = contents.concat({
           role: 'user',
           parts: [
