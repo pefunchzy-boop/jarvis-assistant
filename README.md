@@ -104,7 +104,7 @@ supplémentaire. Les sources utilisées apparaissent dans une carte dédiée.
 
 Deux façons de faire de la musique dans l'app, selon la demande :
 
-- **Composer une partition** ("compose-moi une mélodie", "écris une
+- **Composer une partition** ("compose-moi une mélodie", "écris-moi une
   partition") → l'IA génère une vraie petite partition (notation ABC),
   affichée et jouable directement dans l'app (bouton ▶), gratuit, sans
   clé (bibliothèque abcjs).
@@ -122,6 +122,30 @@ Pour activer la recherche Jamendo, il faut un `client_id` gratuit :
 Sans cette variable, la composition de partitions fonctionne quand même
 (elle ne dépend pas de Jamendo) — seule la recherche de musique existante
 sera indisponible.
+
+## Interdiscussions (mémoire + partage)
+
+Le fichier `appel/interdiscussions.js` ajoute deux fonctions à l'app Appel :
+
+- **Mémoire entre discussions** : à chaque question, l'app cherche dans toutes
+  les discussions sauvegardées les extraits les plus pertinents et les
+  transmet discrètement à Gemini, avec la liste des anciens titres. Tu peux
+  demander « rappelle-moi ce qu'on avait dit sur... ».
+- **Partage d'une discussion** : bouton rond « ⇄ » en haut à droite → panneau
+  listant toutes les discussions (avec filtre), bouton **Partager** (partage
+  natif du téléphone : Message, Mail, WhatsApp... — sinon copie dans le
+  presse-papiers).
+
+### Installation (une seule ligne à ajouter)
+
+1. Sur GitHub, ouvre `appel/index.html` → icône crayon (modifier).
+2. Juste avant la balise `</body>` (toute à la fin du fichier), ajoute la ligne :
+   `<script src="interdiscussions.js"></script>`
+3. **Commit changes**. C'est tout : GitHub Pages déploie en 1-2 minutes.
+
+Le script est 100% autonome : il détecte seul la clé localStorage des
+discussions, ne touche ni au backend ni au reste du code, et si une erreur
+survient il envoie la requête d'origine inchangée.
 
 ## Mettre à jour le code plus tard
 
